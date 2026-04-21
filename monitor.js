@@ -3,9 +3,8 @@ import { stores } from "./stores.js"
 import { captureCheckout } from "./screenshot.js"
 import { analyzeCheckout } from "./analyze.js"
 import { uploadToCloudinary } from "./upload.js"
-import { sendAlert, sendRecoveryAlert } from "./notify.js"
+import { sendStatus } from "./notify.js"
 import { logToSheets, ensureSheetHeaders } from "./sheets.js"
-import { shouldAlert } from "./state.js"
 
 function cleanup(...paths) {
   for (const p of paths) {
@@ -15,25 +14,21 @@ function cleanup(...paths) {
   }
 }
 
-async function checkStore(store, { force = false } = {}) {
+async function checkStore(store) {
   console.log(`\n→ Checking: ${store.name}`)
 
   const outcome = { id: store.id, name: store.name, isOk: null, detail: null, alerted: false }
   let topPath, bottomPath
 
   try {
-    // 1. Screenshot the checkout
     const shot = await captureCheckout(store)
 
     if (!shot.success) {
       console.error(`  ✗ Screenshot failed: ${shot.error}`)
       outcome.isOk = false
       outcome.detail = `Could not load checkout: ${shot.error}`
-      const decision = shouldAlert(store.id, false, { force })
-      if (decision.willAlert) {
-        await sendAlert(store, outcome.detail)
-        outcome.alerted = true
-      }
+      await sendStatus(store, { isOk: false, detail: outcome.detail })
+      outcome.alerted = true
       await logToSheets(store, "ERROR", shot.error)
       return outcome
     }
@@ -42,45 +37,37 @@ async function checkStore(store, { force = false } = {}) {
     bottomPath = shot.bottomPath
     console.log(`  ✓ Screenshots captured`)
 
-    // 2. Analyze with Claude Vision
     const { isOk, result, detail } = await analyzeCheckout(store, topPath, bottomPath)
     console.log(`  ${isOk ? "✓ OK" : `✗ ${result}`}`)
     outcome.isOk = isOk
     outcome.detail = detail
 
-    const decision = shouldAlert(store.id, isOk, { force })
-
-    if (!isOk && decision.willAlert) {
-      // 3. Upload screenshot to Cloudinary
-      let screenshotUrl = null
-      try {
-        const publicId = `${store.id}_${Date.now()}_top`
-        screenshotUrl = await uploadToCloudinary(topPath, publicId)
-        console.log(`  ✓ Screenshot uploaded: ${screenshotUrl}`)
-      } catch (e) {
-        console.warn(`  ⚠ Screenshot upload failed: ${e.message}`)
-      }
-
-      // 4. Fan out to WhatsApp + Telegram + Discord
-      await sendAlert(store, detail, screenshotUrl, shot.pageUrl)
-      outcome.alerted = true
-      outcome.screenshotUrl = screenshotUrl
-
-      const tag = decision.isNewProblem ? "PROBLEM" : "PROBLEM (repeat)"
-      await logToSheets(store, tag, detail, screenshotUrl)
-    } else if (isOk && decision.isRecovery) {
-      await sendRecoveryAlert(store)
-      outcome.alerted = true
-      await logToSheets(store, "RECOVERED", "Checkout back to normal")
-    } else {
-      await logToSheets(store, isOk ? "OK" : "PROBLEM (ongoing)", detail || "")
+    // Always upload screenshot so the heartbeat message has an image attached
+    let screenshotUrl = null
+    try {
+      const publicId = `${store.id}_${Date.now()}_top`
+      screenshotUrl = await uploadToCloudinary(topPath, publicId)
+      console.log(`  ✓ Screenshot uploaded: ${screenshotUrl}`)
+    } catch (e) {
+      console.warn(`  ⚠ Screenshot upload failed: ${e.message}`)
     }
+    outcome.screenshotUrl = screenshotUrl
+
+    // Always fan out: OK → ✅ heartbeat, not OK → 🚨 alert. Both carry the screenshot.
+    await sendStatus(store, { isOk, detail, screenshotUrl, pageUrl: shot.pageUrl })
+    outcome.alerted = true
+
+    await logToSheets(store, isOk ? "OK" : "PROBLEM", detail || "", screenshotUrl)
 
     return outcome
   } catch (err) {
     console.error(`  ✗ Unhandled error: ${err.message}`)
     outcome.isOk = false
     outcome.detail = err.message
+    try {
+      await sendStatus(store, { isOk: false, detail: err.message })
+      outcome.alerted = true
+    } catch {}
     await logToSheets(store, "CRASH", err.message)
     return outcome
   } finally {
@@ -88,9 +75,9 @@ async function checkStore(store, { force = false } = {}) {
   }
 }
 
-export async function runMonitor({ force = false } = {}) {
+export async function runMonitor() {
   console.log(`\n${"=".repeat(50)}`)
-  console.log(`Checkout Monitor — ${new Date().toISOString()}${force ? " (forced)" : ""}`)
+  console.log(`Checkout Monitor — ${new Date().toISOString()}`)
   console.log(`Checking ${stores.length} store(s)`)
   console.log("=".repeat(50))
 
@@ -98,7 +85,7 @@ export async function runMonitor({ force = false } = {}) {
 
   const results = []
   for (const store of stores) {
-    const outcome = await checkStore(store, { force })
+    const outcome = await checkStore(store)
     results.push(outcome)
 
     // Stagger between stores to avoid triggering bot detection
@@ -117,18 +104,18 @@ export async function runMonitor({ force = false } = {}) {
   }
 
   console.log(`\n${"=".repeat(50)}`)
-  console.log(`Monitor run complete — ${summary.healthy}/${summary.total} healthy, ${summary.alerted} alert(s) sent.`)
+  console.log(`Monitor run complete — ${summary.healthy}/${summary.total} healthy, ${summary.alerted} message(s) sent.`)
   console.log("=".repeat(50))
 
   return summary
 }
 
 // Run a single store by ID (for testing)
-export async function runSingle(storeId, { force = false } = {}) {
+export async function runSingle(storeId) {
   const store = stores.find((s) => s.id === storeId)
   if (!store) {
     throw new Error(`Store not found: ${storeId}`)
   }
   await ensureSheetHeaders()
-  return checkStore(store, { force })
+  return checkStore(store)
 }

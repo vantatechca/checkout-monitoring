@@ -170,29 +170,32 @@ async function fanOut(numbers, body, screenshotUrl) {
   return summary
 }
 
-export async function sendAlert(store, problem, screenshotUrl = null, checkoutStore = null) {
+// Heartbeat-style status: always sent each cycle, OK or not.
+export async function sendStatus(store, { isOk, detail, screenshotUrl = null, pageUrl = null }) {
+  const header = isOk ? `✅ *Checkout OK*` : `🚨 *Checkout Alert*`
+  const statusLine = isOk
+    ? `*Status:* No issues detected`
+    : `*Issue:* ${detail || "Unknown problem"}`
+
   const body = [
-    `🚨 *Checkout Monitor Alert*`,
+    header,
     ``,
     `*Store:* ${store.name}`,
-    `*Issue:* ${problem}`,
-    `*Checkout:* ${checkoutStore || store.storeUrl + "/checkout"}`,
+    statusLine,
+    `*Checkout:* ${pageUrl || store.storeUrl + "/checkout"}`,
     `*Time:* ${new Date().toLocaleString("en-CA", { timeZone: "America/Toronto" })} ET`,
   ].join("\n")
 
   return fanOut(getNumbers(store), body, screenshotUrl)
 }
 
-export async function sendRecoveryAlert(store) {
-  const body = [
-    `✅ *Checkout Recovered*`,
-    ``,
-    `*Store:* ${store.name}`,
-    `*Status:* Checkout is back to normal`,
-    `*Time:* ${new Date().toLocaleString("en-CA", { timeZone: "America/Toronto" })} ET`,
-  ].join("\n")
+// Kept for backwards compatibility — thin wrappers around sendStatus.
+export async function sendAlert(store, problem, screenshotUrl = null, checkoutStore = null) {
+  return sendStatus(store, { isOk: false, detail: problem, screenshotUrl, pageUrl: checkoutStore })
+}
 
-  return fanOut(getNumbers(store), body, null)
+export async function sendRecoveryAlert(store) {
+  return sendStatus(store, { isOk: true })
 }
 
 // Generic broadcast — used for digest/test alerts

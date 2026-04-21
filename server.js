@@ -1,7 +1,6 @@
 import http from "node:http"
 import { runMonitor } from "./monitor.js"
 import { broadcast } from "./notify.js"
-import { clearCooldowns } from "./state.js"
 
 const PORT = Number(process.env.PORT) || 3000
 const CHECK_INTERVAL_MS = Number(process.env.CHECK_INTERVAL_MS) || 30 * 60 * 1000
@@ -10,12 +9,12 @@ const TRIGGER_TOKEN = process.env.TRIGGER_TOKEN || ""
 // ─── Guard against overlapping runs ──────────────────────────────────────────
 let running = null
 
-async function safeRun({ force }) {
+async function safeRun() {
   if (running) {
     console.log("⏳ A check is already in progress — awaiting that run.")
     return running
   }
-  running = runMonitor({ force }).finally(() => {
+  running = runMonitor().finally(() => {
     running = null
   })
   return running
@@ -51,26 +50,20 @@ const server = http.createServer(async (req, res) => {
           "Checkout Monitor",
           "",
           "Endpoints:",
-          "  GET  /check         — run all checks now, return JSON (respects cooldown)",
-          "  GET  /trigger       — run all checks AND force-send alerts (bypasses cooldown)",
-          "  GET  /test-alert    — send a test alert to WhatsApp, Telegram, Discord",
-          "  POST /clear-cooldowns — reset alert state",
+          "  GET /check      — run all checks now, return JSON (status also sent to channels)",
+          "  GET /trigger    — alias of /check, runs a fresh cycle on demand",
+          "  GET /test-alert — send a test message to WhatsApp, Telegram, Discord",
           "",
           `Auto-runs every ${Math.round(CHECK_INTERVAL_MS / 60000)} min.`,
+          `Every run sends a status message + screenshot for each store — OK or problem.`,
           TRIGGER_TOKEN ? "Protected endpoints require ?token=<TRIGGER_TOKEN>." : "",
         ].join("\n")
       )
     }
 
-    if (path === "/check" && req.method === "GET") {
+    if ((path === "/check" || path === "/trigger") && req.method === "GET") {
       if (!authorized(url)) return text(res, 401, "Unauthorized")
-      const summary = await safeRun({ force: false })
-      return json(res, 200, summary)
-    }
-
-    if (path === "/trigger" && req.method === "GET") {
-      if (!authorized(url)) return text(res, 401, "Unauthorized")
-      const summary = await safeRun({ force: true })
+      const summary = await safeRun()
       return json(res, 200, summary)
     }
 
@@ -84,12 +77,6 @@ const server = http.createServer(async (req, res) => {
       ].join("\n")
       const delivery = await broadcast(msg)
       return json(res, 200, { sent: true, delivery })
-    }
-
-    if (path === "/clear-cooldowns" && req.method === "POST") {
-      if (!authorized(url)) return text(res, 401, "Unauthorized")
-      clearCooldowns()
-      return text(res, 200, "Cooldown state cleared")
     }
 
     return text(res, 404, "Not Found")
@@ -106,10 +93,10 @@ server.listen(PORT, () => {
   // Fire one shortly after boot so Render health checks pass quickly
   // and you get a baseline run logged.
   setTimeout(() => {
-    safeRun({ force: false }).catch((e) => console.error("Boot run failed:", e))
+    safeRun().catch((e) => console.error("Boot run failed:", e))
   }, 5_000)
 
   setInterval(() => {
-    safeRun({ force: false }).catch((e) => console.error("Scheduled run failed:", e))
+    safeRun().catch((e) => console.error("Scheduled run failed:", e))
   }, CHECK_INTERVAL_MS)
 })

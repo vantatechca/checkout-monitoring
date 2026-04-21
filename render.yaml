@@ -19,14 +19,10 @@ services:
       - key: CHECK_INTERVAL_MS
         value: "1800000"
 
-      # Optional — if set, /check, /trigger, /test-alert and /clear-cooldowns
-      # require ?token=<value>. Leave unset for open access.
+      # Optional — if set, /check, /trigger and /test-alert require ?token=<value>.
+      # Leave unset for open access.
       - key: TRIGGER_TOKEN
         sync: false
-
-      # Per-issue repeat-alert cooldown (ms). Default 1h.
-      - key: ALERT_COOLDOWN_MS
-        value: "3600000"
 
       # Anthropic
       - key: ANTHROPIC_API_KEY
