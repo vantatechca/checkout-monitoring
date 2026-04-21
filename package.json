@@ -2,9 +2,10 @@
   "name": "checkout-monitor",
   "version": "1.0.0",
   "type": "module",
-  "description": "Automated Shopify checkout monitor with AI analysis and WhatsApp alerts",
+  "description": "Automated Shopify checkout monitor with AI analysis and WhatsApp / Telegram / Discord alerts",
   "scripts": {
-    "start": "node monitor.js",
+    "start": "node server.js",
+    "check:once": "node -e \"import('./monitor.js').then(m => m.runMonitor())\"",
     "test:single": "node -e \"import('./monitor.js').then(m => m.runSingle('toronto-peptides'))\""
   },
   "dependencies": {

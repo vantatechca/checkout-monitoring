@@ -2,6 +2,10 @@ import fs from "fs"
 
 const STATE_FILE = "/tmp/monitor-state.json"
 
+// Cooldown — don't re-alert for the same ongoing problem within this window.
+// Default 1 hour; override with env ALERT_COOLDOWN_MS.
+const ALERT_COOLDOWN_MS = Number(process.env.ALERT_COOLDOWN_MS) || 60 * 60 * 1000
+
 function loadState() {
   try {
     if (fs.existsSync(STATE_FILE)) {
@@ -17,18 +21,37 @@ function saveState(state) {
   } catch {}
 }
 
-// Returns true if we should send an alert (status changed or first run)
-export function shouldAlert(storeId, isOk) {
+// Returns { isNewProblem, isRecovery, shouldRepeatAlert } so callers can decide.
+// - isNewProblem: transitioned from ok→problem (or first ever check)
+// - isRecovery:    transitioned from problem→ok
+// - shouldRepeatAlert: still a problem and cooldown has elapsed since last alert
+export function shouldAlert(storeId, isOk, { force = false } = {}) {
   const state = loadState()
-  const prev = state[storeId]
+  const prev = state[storeId] || {}
 
-  const statusChanged = prev === undefined || prev.isOk !== isOk
+  const statusChanged = prev.isOk === undefined || prev.isOk !== isOk
   const isNewProblem = !isOk && statusChanged
-  const isRecovery = isOk && prev?.isOk === false
+  const isRecovery = isOk && prev.isOk === false
 
-  // Update state
-  state[storeId] = { isOk, lastChecked: new Date().toISOString() }
+  const now = Date.now()
+  const sinceLast = prev.lastAlertAt ? now - prev.lastAlertAt : Infinity
+  const shouldRepeatAlert = !isOk && !statusChanged && sinceLast >= ALERT_COOLDOWN_MS
+
+  const willAlert = force || isNewProblem || isRecovery || shouldRepeatAlert
+
+  state[storeId] = {
+    isOk,
+    lastChecked: new Date().toISOString(),
+    lastAlertAt: willAlert && !isOk ? now : prev.lastAlertAt || null,
+  }
   saveState(state)
 
-  return { isNewProblem, isRecovery }
+  return { isNewProblem, isRecovery, shouldRepeatAlert, willAlert }
+}
+
+// Wipe cooldown state — useful for the /clear-cooldowns endpoint.
+export function clearCooldowns() {
+  try {
+    if (fs.existsSync(STATE_FILE)) fs.unlinkSync(STATE_FILE)
+  } catch {}
 }
