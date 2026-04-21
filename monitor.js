@@ -15,9 +15,10 @@ function cleanup(...paths) {
   }
 }
 
-async function checkStore(store) {
+async function checkStore(store, { force = false } = {}) {
   console.log(`\n→ Checking: ${store.name}`)
 
+  const outcome = { id: store.id, name: store.name, isOk: null, detail: null, alerted: false }
   let topPath, bottomPath
 
   try {
@@ -26,12 +27,15 @@ async function checkStore(store) {
 
     if (!shot.success) {
       console.error(`  ✗ Screenshot failed: ${shot.error}`)
-      const { isNewProblem } = shouldAlert(store.id, false)
-      if (isNewProblem) {
-        await sendAlert(store, `Could not load checkout: ${shot.error}`)
+      outcome.isOk = false
+      outcome.detail = `Could not load checkout: ${shot.error}`
+      const decision = shouldAlert(store.id, false, { force })
+      if (decision.willAlert) {
+        await sendAlert(store, outcome.detail)
+        outcome.alerted = true
       }
       await logToSheets(store, "ERROR", shot.error)
-      return
+      return outcome
     }
 
     topPath = shot.topPath
@@ -41,10 +45,12 @@ async function checkStore(store) {
     // 2. Analyze with Claude Vision
     const { isOk, result, detail } = await analyzeCheckout(store, topPath, bottomPath)
     console.log(`  ${isOk ? "✓ OK" : `✗ ${result}`}`)
+    outcome.isOk = isOk
+    outcome.detail = detail
 
-    const { isNewProblem, isRecovery } = shouldAlert(store.id, isOk)
+    const decision = shouldAlert(store.id, isOk, { force })
 
-    if (isNewProblem) {
+    if (!isOk && decision.willAlert) {
       // 3. Upload screenshot to Cloudinary
       let screenshotUrl = null
       try {
@@ -55,37 +61,45 @@ async function checkStore(store) {
         console.warn(`  ⚠ Screenshot upload failed: ${e.message}`)
       }
 
-      // 4. Send WhatsApp alerts
+      // 4. Fan out to WhatsApp + Telegram + Discord
       await sendAlert(store, detail, screenshotUrl, shot.pageUrl)
-      console.log(`  ✓ Alerts sent`)
+      outcome.alerted = true
+      outcome.screenshotUrl = screenshotUrl
 
-      // 5. Log to Sheets
-      await logToSheets(store, "PROBLEM", detail, screenshotUrl)
-    } else if (isRecovery) {
+      const tag = decision.isNewProblem ? "PROBLEM" : "PROBLEM (repeat)"
+      await logToSheets(store, tag, detail, screenshotUrl)
+    } else if (isOk && decision.isRecovery) {
       await sendRecoveryAlert(store)
+      outcome.alerted = true
       await logToSheets(store, "RECOVERED", "Checkout back to normal")
-      console.log(`  ✓ Recovery alert sent`)
     } else {
       await logToSheets(store, isOk ? "OK" : "PROBLEM (ongoing)", detail || "")
     }
+
+    return outcome
   } catch (err) {
     console.error(`  ✗ Unhandled error: ${err.message}`)
+    outcome.isOk = false
+    outcome.detail = err.message
     await logToSheets(store, "CRASH", err.message)
+    return outcome
   } finally {
     cleanup(topPath, bottomPath)
   }
 }
 
-export async function runMonitor() {
+export async function runMonitor({ force = false } = {}) {
   console.log(`\n${"=".repeat(50)}`)
-  console.log(`Checkout Monitor — ${new Date().toISOString()}`)
+  console.log(`Checkout Monitor — ${new Date().toISOString()}${force ? " (forced)" : ""}`)
   console.log(`Checking ${stores.length} store(s)`)
   console.log("=".repeat(50))
 
   await ensureSheetHeaders()
 
+  const results = []
   for (const store of stores) {
-    await checkStore(store)
+    const outcome = await checkStore(store, { force })
+    results.push(outcome)
 
     // Stagger between stores to avoid triggering bot detection
     if (stores.indexOf(store) < stores.length - 1) {
@@ -93,24 +107,28 @@ export async function runMonitor() {
     }
   }
 
+  const summary = {
+    checked_at: new Date().toISOString(),
+    total: results.length,
+    healthy: results.filter((r) => r.isOk).length,
+    issues: results.filter((r) => r.isOk === false).length,
+    alerted: results.filter((r) => r.alerted).length,
+    stores: results,
+  }
+
   console.log(`\n${"=".repeat(50)}`)
-  console.log("Monitor run complete.")
+  console.log(`Monitor run complete — ${summary.healthy}/${summary.total} healthy, ${summary.alerted} alert(s) sent.`)
   console.log("=".repeat(50))
+
+  return summary
 }
 
 // Run a single store by ID (for testing)
-export async function runSingle(storeId) {
+export async function runSingle(storeId, { force = false } = {}) {
   const store = stores.find((s) => s.id === storeId)
   if (!store) {
-    console.error(`Store not found: ${storeId}`)
-    process.exit(1)
+    throw new Error(`Store not found: ${storeId}`)
   }
   await ensureSheetHeaders()
-  await checkStore(store)
+  return checkStore(store, { force })
 }
-
-// Entry point
-runMonitor().catch((err) => {
-  console.error("Fatal error:", err)
-  process.exit(1)
-})
