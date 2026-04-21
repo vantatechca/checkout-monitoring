@@ -1,0 +1,47 @@
+services:
+  - type: cron
+    name: checkout-monitor
+    runtime: node
+    schedule: "*/15 * * * *"  # every 15 minutes
+    buildCommand: npm install && npx playwright install chromium --with-deps
+    startCommand: node monitor.js
+    envVars:
+      # Anthropic
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+      # Twilio WhatsApp
+      - key: TWILIO_SID
+        sync: false
+      - key: TWILIO_TOKEN
+        sync: false
+      - key: TWILIO_WHATSAPP_FROM
+        sync: false
+        # Format: +14155238886 (sandbox) or your approved number
+      - key: ALERT_WHATSAPP_NUMBERS
+        sync: false
+        # Format: +19171234567,+16471234567,+63917123456
+
+      # Cloudinary
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_UPLOAD_PRESET
+        sync: false
+        # Must be an UNSIGNED upload preset
+
+      # Google Sheets (optional)
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+        # Paste the full service account JSON as a single line
+      - key: SHEETS_ID
+        sync: false
+        # The ID from your Google Sheet URL
+
+      # Proxy (optional but recommended)
+      - key: PROXY_SERVER
+        sync: false
+        # Format: http://proxy.webshare.io:80
+      - key: PROXY_USER
+        sync: false
+      - key: PROXY_PASS
+        sync: false

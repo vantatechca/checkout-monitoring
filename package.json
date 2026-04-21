@@ -1,0 +1,19 @@
+{
+  "name": "checkout-monitor",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Automated Shopify checkout monitor with AI analysis and WhatsApp alerts",
+  "scripts": {
+    "start": "node monitor.js",
+    "test:single": "node -e \"import('./monitor.js').then(m => m.runSingle('toronto-peptides'))\""
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.24.0",
+    "form-data": "^4.0.0",
+    "googleapis": "^140.0.0",
+    "playwright": "^1.44.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "twilio": "^5.0.0"
+  }
+}
