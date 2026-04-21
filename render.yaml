@@ -9,6 +9,12 @@ services:
     startCommand: node server.js
     healthCheckPath: /
     envVars:
+      # Install Playwright browsers into node_modules so they survive the
+      # build→runtime filesystem boundary on Render. Without this, chromium
+      # lands in ~/.cache/ms-playwright which is wiped before the service starts.
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: "0"
+
       # Internal schedule (ms). Default 30 min.
       - key: CHECK_INTERVAL_MS
         value: "1800000"
