@@ -6,7 +6,7 @@ import { uploadToCloudinary } from "./upload.js"
 import { sendStatus, broadcast } from "./notify.js"
 import { logToSheets, ensureSheetHeaders } from "./sheets.js"
 import { getRouterStatus } from "./workerStatus.js"
-import { shouldSendAlert } from "./state.js"
+import { shouldSendAlert, shouldSendRouterStatus } from "./state.js"
 
 function cleanup(...paths) {
   for (const p of paths) {
@@ -133,13 +133,17 @@ export async function runMonitor() {
     }
   }
 
-  // Router status digest — sent to Telegram + Discord only (WhatsApp is costly
-  // and these are routine informational updates, not urgent alerts).
+  // Router status digest — throttled to every ROUTER_STATUS_INTERVAL_MS
+  // (default 4h). Sent to Telegram + Discord only (routine informational).
   let router = null
+  const routerDecision = shouldSendRouterStatus()
   try {
     router = await getRouterStatus()
-    if (router?.message) {
+    if (router?.message && routerDecision.send) {
       await broadcast(router.message, null, ["telegram", "discord"])
+      console.log(`📊 Router status broadcast (${routerDecision.reason})`)
+    } else if (router?.message) {
+      console.log(`⏳ Router status ready but throttled — next digest in <= 4h`)
     }
   } catch (e) {
     console.error("Router status broadcast failed:", e.message)

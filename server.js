@@ -121,7 +121,8 @@ const server = http.createServer(async (req, res) => {
           "  POST /alert         — inbound alerts from the bridge Cloudflare Worker",
           "",
           `Auto-runs every ${Math.round(CHECK_INTERVAL_MS / 60000)} min.`,
-          `Every run sends a per-store status + screenshot and a router-status digest.`,
+          `Every run: per-store screenshot + alert (OK every 2h, PROBLEM every 30min).`,
+          `Router status digest broadcasts every 4h (or on demand via /router-status).`,
           TRIGGER_TOKEN ? "Protected endpoints require ?token=<TRIGGER_TOKEN>." : "",
           BRIDGE_ALERT_SECRET ? "POST /alert requires X-Alert-Secret header." : "",
         ].join("\n")
