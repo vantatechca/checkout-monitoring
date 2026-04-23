@@ -23,13 +23,14 @@ function saveState(state) {
 /**
  * Decide whether to fire an alert for this store's current status.
  *
+ *   - { force: true } → always send (used by manual /trigger URL)
  *   - PROBLEM (isOk === false) → always send (every cycle until fixed)
  *   - Recovery (was broken, now OK) → always send, regardless of throttle
  *   - OK heartbeat (was OK, still OK) → only every OK_ALERT_INTERVAL_MS (2h default)
  *
  * Returns { send, reason } and persists updated state.
  */
-export function shouldSendAlert(storeId, isOk) {
+export function shouldSendAlert(storeId, isOk, opts = {}) {
   const state = loadState()
   const prev = state[storeId] || {}
   const now = Date.now()
@@ -37,7 +38,10 @@ export function shouldSendAlert(storeId, isOk) {
   let send = false
   let reason = ""
 
-  if (!isOk) {
+  if (opts.force) {
+    send = true
+    reason = "forced"
+  } else if (!isOk) {
     send = true
     reason = "problem"
   } else if (prev.isOk === false) {
@@ -77,15 +81,15 @@ export function clearState() {
 const ROUTER_STATUS_INTERVAL_MS =
   Number(process.env.ROUTER_STATUS_INTERVAL_MS) || 4 * 60 * 60 * 1000
 
-export function shouldSendRouterStatus() {
+export function shouldSendRouterStatus(opts = {}) {
   const state = loadState()
   const now = Date.now()
   const last = state._routerStatusAt || 0
 
-  if (now - last >= ROUTER_STATUS_INTERVAL_MS) {
+  if (opts.force || now - last >= ROUTER_STATUS_INTERVAL_MS) {
     state._routerStatusAt = now
     saveState(state)
-    return { send: true, reason: last ? "interval" : "first-run" }
+    return { send: true, reason: opts.force ? "forced" : last ? "interval" : "first-run" }
   }
   return { send: false, reason: "throttled" }
 }

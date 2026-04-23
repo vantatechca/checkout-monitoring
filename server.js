@@ -13,12 +13,12 @@ const BRIDGE_ALERT_SECRET = process.env.BRIDGE_ALERT_SECRET || ""
 // ─── Guard against overlapping runs ──────────────────────────────────────────
 let running = null
 
-async function safeRun() {
+async function safeRun({ force = false } = {}) {
   if (running) {
     console.log("⏳ A check is already in progress — awaiting that run.")
     return running
   }
-  running = runMonitor().finally(() => {
+  running = runMonitor({ force }).finally(() => {
     running = null
   })
   return running
@@ -114,8 +114,8 @@ const server = http.createServer(async (req, res) => {
           "Checkout Monitor",
           "",
           "Endpoints:",
-          "  GET  /check         — run all checks now, return JSON (status also sent to channels)",
-          "  GET  /trigger       — alias of /check, runs a fresh cycle on demand",
+          "  GET  /check         — run all checks now, respect throttle (like the 30-min scheduled cycle)",
+          "  GET  /trigger       — force-run + force-send: bypasses 2h OK + 4h router throttles",
           "  GET  /test-alert    — send a test message to WhatsApp, Telegram, Discord",
           "  GET  /router-status — fetch bridge router status and broadcast to Telegram + Discord",
           "  POST /alert         — inbound alerts from the bridge Cloudflare Worker",
@@ -129,9 +129,18 @@ const server = http.createServer(async (req, res) => {
       )
     }
 
-    if ((path === "/check" || path === "/trigger") && req.method === "GET") {
+    // /check — runs a cycle respecting throttles (matches the 30-min behavior)
+    if (path === "/check" && req.method === "GET") {
       if (!authorized(url)) return text(res, 401, "Unauthorized")
-      const summary = await safeRun()
+      const summary = await safeRun({ force: false })
+      return json(res, 200, summary)
+    }
+
+    // /trigger — runs a cycle and forces sends, bypassing the 2h OK throttle
+    // and 4h router-status throttle. Use this for manual testing.
+    if (path === "/trigger" && req.method === "GET") {
+      if (!authorized(url)) return text(res, 401, "Unauthorized")
+      const summary = await safeRun({ force: true })
       return json(res, 200, summary)
     }
 
