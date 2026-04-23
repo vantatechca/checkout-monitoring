@@ -15,9 +15,14 @@ services:
       - key: PLAYWRIGHT_BROWSERS_PATH
         value: "0"
 
-      # Internal schedule (ms). Default 30 min.
+      # Check cadence (ms). Every cycle: screenshot + analyze every store.
       - key: CHECK_INTERVAL_MS
-        value: "1800000"
+        value: "1800000"   # 30 min
+
+      # OK-heartbeat throttle (ms). Healthy stores only send an alert this often.
+      # PROBLEM alerts always fire every cycle until resolved.
+      - key: OK_ALERT_INTERVAL_MS
+        value: "7200000"   # 2 h
 
       # Optional — if set, /check, /trigger and /test-alert require ?token=<value>.
       # Leave unset for open access.
