@@ -4,12 +4,6 @@ import StealthPlugin from "puppeteer-extra-plugin-stealth"
 chromium.use(StealthPlugin())
 
 // Turn the bridge's non-redirect response into a human-readable reason.
-// The bridge returns:
-//   • 302 + Location header          → happy path, handled above
-//   • 200/4xx body "Daily checkout limit reached..." → limiter hit
-//   • 404 body "Not found"           → wrong endpoint / route removed
-//   • 5xx body with Cloudflare "Error 1101 — Worker threw exception" HTML
-//   • 503 during deploy / outage
 function classifyBridgeFailure(status, body) {
   const text = (body || "").toLowerCase()
 
@@ -38,8 +32,6 @@ function classifyBridgeFailure(status, body) {
 }
 
 // Selectors that signal different parts of a Shopify checkout are rendered.
-// We try many because Shopify's checkout markup varies by version (classic vs
-// Checkout Extensibility / One Page Checkout).
 const CHECKOUT_ROOT_SELECTORS = [
   '[data-checkout-rendered="true"]',
   'form[action*="checkouts"]',
@@ -76,8 +68,28 @@ async function waitForAny(page, selectors, timeout) {
   )
 }
 
+// Render a bridge-error reason as an HTML page so even when the bridge
+// returned no invoice URL, we still produce a visual screenshot.
+function bridgeErrorDataUrl(reason, body) {
+  const safe = (s) => String(s || "").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]))
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8"><title>Bridge error</title><style>
+body{font:16px/1.5 -apple-system,system-ui,monospace;padding:40px;color:#fff;background:#1a1823}
+h1{color:#ff6b6b;font-size:22px;margin:0 0 12px}
+pre{background:#0f0d16;border:1px solid #2a2635;padding:16px;border-radius:8px;white-space:pre-wrap;word-wrap:break-word;font-size:13px;color:#d8d3e8;max-height:400px;overflow:hidden}
+small{color:#8f8aa0}
+</style></head><body>
+<h1>Bridge error</h1>
+<p><strong>${safe(reason)}</strong></p>
+<small>Raw body:</small>
+<pre>${safe((body || "").slice(0, 1500))}</pre>
+</body></html>`
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+}
+
 export async function captureCheckout(store) {
   let browser
+  let page
 
   try {
     const launchOptions = {
@@ -108,76 +120,108 @@ export async function captureCheckout(store) {
       locale: "en-CA",
     })
 
-    const page = await context.newPage()
+    page = await context.newPage()
 
     // Step 1 — Call the bridge to get a draft order invoice URL
-    const bridgeRes = await fetch(store.bridgeUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Origin: store.storeUrl,
-        Referer: store.storeUrl + "/",
-      },
-      body: JSON.stringify(store.bridgePayload),
-      redirect: "manual",
-    })
+    let invoiceUrl = null
+    let bridgeStatus = null
+    let bridgeBody = ""
+    let bridgeError = null
 
-    const invoiceUrl = bridgeRes.headers.get("location")
-
-    if (!invoiceUrl) {
-      const body = (await bridgeRes.text()).trim()
-      return {
-        success: false,
-        bridgeStatus: bridgeRes.status,
-        bridgeBody: body,
-        error: classifyBridgeFailure(bridgeRes.status, body),
+    try {
+      const bridgeRes = await fetch(store.bridgeUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: store.storeUrl,
+          Referer: store.storeUrl + "/",
+        },
+        body: JSON.stringify(store.bridgePayload),
+        redirect: "manual",
+      })
+      bridgeStatus = bridgeRes.status
+      invoiceUrl = bridgeRes.headers.get("location")
+      if (!invoiceUrl) {
+        bridgeBody = (await bridgeRes.text()).trim()
+        bridgeError = classifyBridgeFailure(bridgeRes.status, bridgeBody)
       }
+    } catch (e) {
+      bridgeError = `Bridge request failed: ${e.message}`
     }
 
-    console.log(`  → Invoice: ${invoiceUrl.substring(0, 70)}...`)
+    // Step 2 — Decide what URL to navigate to. Always navigate to SOMETHING so
+    // we get a screenshot regardless of what went wrong upstream.
+    const targetUrl = invoiceUrl || bridgeErrorDataUrl(bridgeError, bridgeBody)
+    if (invoiceUrl) {
+      console.log(`  → Invoice: ${invoiceUrl.substring(0, 70)}...`)
+    } else {
+      console.log(`  ⚠ Bridge error — rendering diagnostic page for screenshot: ${bridgeError}`)
+    }
 
-    // Step 2 — Navigate to the checkout
-    await page.goto(invoiceUrl, { waitUntil: "domcontentloaded", timeout: 40000 })
+    try {
+      await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 40_000 })
 
-    // Step 3 — Wait for the checkout shell to render (any of several selectors)
-    await waitForAny(page, CHECKOUT_ROOT_SELECTORS, 20_000)
+      // Only run the "wait for Shopify checkout" choreography if we navigated
+      // to a real invoice URL. For bridge-error data URLs, just a brief pause.
+      if (invoiceUrl) {
+        await waitForAny(page, CHECKOUT_ROOT_SELECTORS, 20_000)
 
-    // Step 4 — Scroll to the bottom so lazy-rendered payment iframes / summary are forced to render
-    await page.evaluate(async () => {
-      const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-      const height = document.body.scrollHeight
-      let y = 0
-      while (y < height) {
-        y += 400
-        window.scrollTo(0, y)
-        await sleep(150)
+        await page.evaluate(async () => {
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+          const height = document.body.scrollHeight
+          let y = 0
+          while (y < height) {
+            y += 400
+            window.scrollTo(0, y)
+            await sleep(150)
+          }
+          window.scrollTo(0, document.body.scrollHeight)
+          await sleep(500)
+          window.scrollTo(0, 0)
+        }).catch(() => {})
+
+        await waitForAny(page, PAYMENT_SECTION_SELECTORS, 15_000)
+        await waitForAny(page, PAY_BUTTON_SELECTORS, 10_000)
+        await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {})
+        await page.waitForTimeout(2500)
+      } else {
+        await page.waitForTimeout(500)
       }
-      window.scrollTo(0, document.body.scrollHeight)
-      await sleep(500)
-      window.scrollTo(0, 0)
-    })
+    } catch (navErr) {
+      // Navigation failed — keep going and try to screenshot whatever is on-page.
+      console.warn("  ⚠ Navigation issue, still attempting screenshot:", navErr.message)
+    }
 
-    // Step 5 — Wait for the payment section to actually exist
-    await waitForAny(page, PAYMENT_SECTION_SELECTORS, 15_000)
+    // Step 3 — Always extract visible text (for the text-check path in analyze.js).
+    const pageText = await page
+      .evaluate(() => document.body?.innerText || "")
+      .catch(() => "")
 
-    // Step 6 — Wait for the pay button (final piece of a rendered checkout)
-    await waitForAny(page, PAY_BUTTON_SELECTORS, 10_000)
-
-    // Step 7 — Wait for the network to settle so iframes finish loading
-    await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {})
-
-    // Step 8 — Final buffer for any last paint / iframe hydration
-    await page.waitForTimeout(2500)
-
+    // Step 4 — Always screenshot whatever we ended up on.
     const currentUrl = page.url()
     const timestamp = Date.now()
     const fullPath = `/tmp/${store.id}_${timestamp}_full.png`
 
-    await page.screenshot({ path: fullPath, fullPage: true })
+    let screenshotOk = false
+    try {
+      await page.screenshot({ path: fullPath, fullPage: true })
+      screenshotOk = true
+    } catch (e) {
+      console.error("  ✗ Screenshot failed:", e.message)
+    }
 
-    return { topPath: fullPath, bottomPath: fullPath, pageUrl: currentUrl, success: true }
+    return {
+      success: !bridgeError,
+      error: bridgeError,
+      topPath: screenshotOk ? fullPath : null,
+      bottomPath: screenshotOk ? fullPath : null,
+      pageUrl: currentUrl,
+      pageText,
+      bridgeStatus,
+      bridgeBody: bridgeBody || null,
+    }
   } catch (err) {
-    return { success: false, error: err.message }
+    return { success: false, error: err.message, pageText: "" }
   } finally {
     if (browser) await browser.close()
   }
