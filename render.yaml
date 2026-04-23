@@ -24,6 +24,16 @@ services:
       - key: TRIGGER_TOKEN
         sync: false
 
+      # Bridge router status endpoint (fetched each cycle and broadcast to
+      # Telegram + Discord)
+      - key: BRIDGE_ROUTER_STATUS_URL
+        value: "https://bridge-7.flystarcafe7.workers.dev/router/status"
+
+      # Shared secret for POST /alert from the bridge Cloudflare Worker.
+      # Without this the endpoint accepts unauthenticated bodies.
+      - key: BRIDGE_ALERT_SECRET
+        sync: false
+
       # Anthropic
       - key: ANTHROPIC_API_KEY
         sync: false
