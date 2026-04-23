@@ -25,7 +25,8 @@ export async function getRouterStatus(url = DEFAULT_ROUTER_STATUS_URL) {
       const pct = limit > 0 ? ((volume / limit) * 100).toFixed(0) : "0"
       const bar =
         store.status === "exhausted" ? "🔴" : Number(pct) >= 80 ? "🟡" : "🟢"
-      lines.push(`${bar} ${store.name}: $${volume.toFixed(0)} / $${limit} (${pct}%)`)
+      const shop = store.shop ? ` (${store.shop})` : ""
+      lines.push(`${bar} ${store.name}${shop}: $${volume.toFixed(0)} / $${limit} (${pct}%)`)
     }
 
     if (data.resets_at) {
