@@ -16,7 +16,7 @@ function cleanup(...paths) {
   }
 }
 
-async function checkStore(store) {
+async function checkStore(store, { force = false } = {}) {
   console.log(`\n→ Checking: ${store.name}`)
 
   const outcome = {
@@ -76,12 +76,13 @@ async function checkStore(store) {
     //   - any PROBLEM: always send
     //   - recovery (broken → OK): always send
     //   - steady OK: only every OK_ALERT_INTERVAL_MS (default 2h)
-    const { send, reason } = shouldSendAlert(store.id, isOk)
+    const { send, reason } = shouldSendAlert(store.id, isOk, { force })
     outcome.alertReason = reason
 
     if (send) {
       await sendStatus(store, { isOk, detail, screenshotUrl, pageUrl: shot.pageUrl })
       outcome.alerted = true
+      if (reason === "forced") console.log(`  🚀 Forced send (manual trigger)`)
     } else {
       console.log(`  ⏳ Skipping OK heartbeat (throttled — last alert < 2h ago)`)
     }
@@ -101,7 +102,7 @@ async function checkStore(store) {
     outcome.isOk = false
     outcome.detail = err.message
     try {
-      const { send } = shouldSendAlert(store.id, false)
+      const { send } = shouldSendAlert(store.id, false, { force })
       if (send) {
         await sendStatus(store, { isOk: false, detail: err.message })
         outcome.alerted = true
@@ -114,9 +115,9 @@ async function checkStore(store) {
   }
 }
 
-export async function runMonitor() {
+export async function runMonitor({ force = false } = {}) {
   console.log(`\n${"=".repeat(50)}`)
-  console.log(`Checkout Monitor — ${new Date().toISOString()}`)
+  console.log(`Checkout Monitor — ${new Date().toISOString()}${force ? " (forced)" : ""}`)
   console.log(`Checking ${stores.length} store(s)`)
   console.log("=".repeat(50))
 
@@ -124,7 +125,7 @@ export async function runMonitor() {
 
   const results = []
   for (const store of stores) {
-    const outcome = await checkStore(store)
+    const outcome = await checkStore(store, { force })
     results.push(outcome)
 
     // Stagger between stores to avoid triggering bot detection
@@ -134,9 +135,9 @@ export async function runMonitor() {
   }
 
   // Router status digest — throttled to every ROUTER_STATUS_INTERVAL_MS
-  // (default 4h). Sent to Telegram + Discord only (routine informational).
+  // (default 4h). Manual /trigger force-broadcasts regardless of throttle.
   let router = null
-  const routerDecision = shouldSendRouterStatus()
+  const routerDecision = shouldSendRouterStatus({ force })
   try {
     router = await getRouterStatus()
     if (router?.message && routerDecision.send) {
