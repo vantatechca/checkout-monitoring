@@ -24,6 +24,10 @@ services:
       - key: OK_ALERT_INTERVAL_MS
         value: "7200000"   # 2 h
 
+      # Router status digest throttle (ms). Informational, not urgent.
+      - key: ROUTER_STATUS_INTERVAL_MS
+        value: "14400000"  # 4 h
+
       # Optional — if set, /check, /trigger and /test-alert require ?token=<value>.
       # Leave unset for open access.
       - key: TRIGGER_TOKEN
