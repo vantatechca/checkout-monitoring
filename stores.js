@@ -14,7 +14,7 @@ export const stores = [
     id: "toronto-peptides",
     name: "Toronto Peptides",
     storeUrl: "https://torontopeptides.ca",
-    bridgeUrl: "",
+    bridgeUrl: "https://bridge-7.flystarcafe7.workers.dev/s2s",
     bridgePayload: {
       source_store: "torontopeptides.com",
       currency: "CAD",
