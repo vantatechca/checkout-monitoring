@@ -3,6 +3,40 @@ import StealthPlugin from "puppeteer-extra-plugin-stealth"
 
 chromium.use(StealthPlugin())
 
+// Turn the bridge's non-redirect response into a human-readable reason.
+// The bridge returns:
+//   • 302 + Location header          → happy path, handled above
+//   • 200/4xx body "Daily checkout limit reached..." → limiter hit
+//   • 404 body "Not found"           → wrong endpoint / route removed
+//   • 5xx body with Cloudflare "Error 1101 — Worker threw exception" HTML
+//   • 503 during deploy / outage
+function classifyBridgeFailure(status, body) {
+  const text = (body || "").toLowerCase()
+
+  if (text.includes("daily checkout limit reached") || text.includes("try again after midnight")) {
+    return "Bridge daily checkout limit reached (resets at midnight EDT)"
+  }
+  if (text.includes("error 1101") || text.includes("worker threw exception")) {
+    return `Bridge worker threw exception (Cloudflare Error 1101) — check Workers Logs`
+  }
+  if (text.includes("error 1102") || text.includes("worker exceeded cpu")) {
+    return "Bridge worker hit CPU limit (Cloudflare Error 1102)"
+  }
+  if (status === 404 || text === "not found" || text.includes("not found")) {
+    return "Bridge endpoint not found (404) — check bridgeUrl and worker route"
+  }
+  if (status === 429 || text.includes("rate limit")) {
+    return "Bridge rate-limited (429)"
+  }
+  if (status === 503) {
+    return "Bridge temporarily unavailable (503) — deploy in progress or outage"
+  }
+  if (status >= 500) {
+    return `Bridge server error (${status}): ${body.slice(0, 160)}`
+  }
+  return `Bridge returned no invoice URL (${status}): ${body.slice(0, 200)}`
+}
+
 // Selectors that signal different parts of a Shopify checkout are rendered.
 // We try many because Shopify's checkout markup varies by version (classic vs
 // Checkout Extensibility / One Page Checkout).
@@ -91,13 +125,12 @@ export async function captureCheckout(store) {
     const invoiceUrl = bridgeRes.headers.get("location")
 
     if (!invoiceUrl) {
-      const body = await bridgeRes.text()
+      const body = (await bridgeRes.text()).trim()
       return {
         success: false,
-        error: `Bridge returned no invoice URL. Status: ${bridgeRes.status}. Body: ${body.slice(
-          0,
-          200
-        )}`,
+        bridgeStatus: bridgeRes.status,
+        bridgeBody: body,
+        error: classifyBridgeFailure(bridgeRes.status, body),
       }
     }
 

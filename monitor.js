@@ -3,8 +3,9 @@ import { stores } from "./stores.js"
 import { captureCheckout } from "./screenshot.js"
 import { analyzeCheckout } from "./analyze.js"
 import { uploadToCloudinary } from "./upload.js"
-import { sendStatus } from "./notify.js"
+import { sendStatus, broadcast } from "./notify.js"
 import { logToSheets, ensureSheetHeaders } from "./sheets.js"
+import { getRouterStatus } from "./workerStatus.js"
 
 function cleanup(...paths) {
   for (const p of paths) {
@@ -94,6 +95,18 @@ export async function runMonitor() {
     }
   }
 
+  // Router status digest — sent to Telegram + Discord only (WhatsApp is costly
+  // and these are routine informational updates, not urgent alerts).
+  let router = null
+  try {
+    router = await getRouterStatus()
+    if (router?.message) {
+      await broadcast(router.message, null, ["telegram", "discord"])
+    }
+  } catch (e) {
+    console.error("Router status broadcast failed:", e.message)
+  }
+
   const summary = {
     checked_at: new Date().toISOString(),
     total: results.length,
@@ -101,6 +114,7 @@ export async function runMonitor() {
     issues: results.filter((r) => r.isOk === false).length,
     alerted: results.filter((r) => r.alerted).length,
     stores: results,
+    router: router?.data || null,
   }
 
   console.log(`\n${"=".repeat(50)}`)

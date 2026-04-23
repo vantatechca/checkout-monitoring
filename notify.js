@@ -159,11 +159,17 @@ async function sendDiscord(body, screenshotUrl) {
 }
 
 // ─── Fan-out helpers ─────────────────────────────────────────────────────────
-async function fanOut(numbers, body, screenshotUrl) {
+// channels defaults to all three; pass e.g. ["telegram", "discord"] to skip
+// WhatsApp for high-volume or cost-sensitive alerts.
+async function fanOut(numbers, body, screenshotUrl, channels = ["whatsapp", "telegram", "discord"]) {
+  const wantWhatsApp = channels.includes("whatsapp")
+  const wantTelegram = channels.includes("telegram")
+  const wantDiscord = channels.includes("discord")
+
   const [whatsapp, telegram, discord] = await Promise.all([
-    sendWhatsApp(numbers, body, screenshotUrl),
-    sendTelegram(body, screenshotUrl),
-    sendDiscord(body, screenshotUrl),
+    wantWhatsApp ? sendWhatsApp(numbers, body, screenshotUrl) : Promise.resolve({ ok: null }),
+    wantTelegram ? sendTelegram(body, screenshotUrl) : Promise.resolve({ ok: null }),
+    wantDiscord ? sendDiscord(body, screenshotUrl) : Promise.resolve({ ok: null }),
   ])
   const summary = { whatsapp: whatsapp.ok, telegram: telegram.ok, discord: discord.ok }
   console.log("📢 Alert delivery:", JSON.stringify(summary))
@@ -198,7 +204,9 @@ export async function sendRecoveryAlert(store) {
   return sendStatus(store, { isOk: true })
 }
 
-// Generic broadcast — used for digest/test alerts
-export async function broadcast(message, screenshotUrl = null) {
-  return fanOut(GLOBAL_NUMBERS, message, screenshotUrl)
+// Generic broadcast — used for digest/test alerts.
+// Pass channels: ["telegram", "discord"] to skip WhatsApp (e.g. for router
+// status or noisy bridge-forwarded alerts).
+export async function broadcast(message, screenshotUrl = null, channels) {
+  return fanOut(GLOBAL_NUMBERS, message, screenshotUrl, channels)
 }
