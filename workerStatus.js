@@ -34,8 +34,20 @@ export async function getRouterStatus(url = DEFAULT_ROUTER_STATUS_URL) {
       lines.push(`⏰ Resets: ${data.resets_at}`)
     }
 
-    if (Number(data.exhausted) > 0) {
-      lines.push(`⚠️ ${data.exhausted} store(s) over limit — still accepting orders`)
+    const exhausted = Number(data.exhausted) || 0
+    const available = Number(data.available) || stores.length - exhausted
+    if (exhausted > 0) {
+      if (available > 0) {
+        // Some stores at limit, others have room — orders route to the ones with room.
+        lines.push(
+          `🟡 ${exhausted} store(s) at daily limit — orders routing to ${available} remaining store(s)`
+        )
+      } else {
+        // ALL stores at limit — bridge falls back to first store and keeps accepting.
+        lines.push(
+          `🔴 ALL stores at daily limit — bridge falling back to first store, still accepting`
+        )
+      }
     }
 
     return { ok: true, message: lines.join("\n"), data }
