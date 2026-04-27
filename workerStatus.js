@@ -58,3 +58,57 @@ export async function getRouterStatus(url = DEFAULT_ROUTER_STATUS_URL) {
     }
   }
 }
+
+// Fetches the bridge's health-check endpoint and formats it.
+// Expected shape:
+//   { results: [{ status, name, gateways }], issues, healthy, total_stores }
+// where `status` is already an emoji string like "✅" / "❌" / "🧊" / etc.
+
+const DEFAULT_HEALTH_CHECK_URL =
+  process.env.BRIDGE_HEALTH_CHECK_URL ||
+  "https://bridge-7.flystarcafe7.workers.dev/health-check"
+
+export async function getHealthCheck(url = DEFAULT_HEALTH_CHECK_URL) {
+  try {
+    const resp = await fetch(url, { redirect: "manual" })
+    if (!resp.ok) {
+      return {
+        ok: false,
+        hasIssues: true,
+        message: `⚠️ *HEALTH CHECK UNAVAILABLE*\nBridge returned HTTP ${resp.status}`,
+      }
+    }
+
+    const data = await resp.json()
+    const results = Array.isArray(data?.results) ? data.results : []
+
+    const lines = ["🏥 *STORE HEALTH CHECK*"]
+    for (const r of results) {
+      const status = r.status || "•"
+      const name = r.name || "(unknown)"
+      const gateways = r.gateways ? ` | ${r.gateways}` : ""
+      lines.push(`${status} ${name}${gateways}`)
+    }
+
+    const issues = Number(data.issues) || 0
+    const healthy = Number(data.healthy) || 0
+    const total = Number(data.total_stores) || results.length
+
+    if (issues > 0) {
+      lines.push("")
+      lines.push(`🚨 ${issues} store(s) need attention!`)
+      lines.push(`Healthy: ${healthy}/${total}`)
+    } else {
+      lines.push("")
+      lines.push(`✅ All ${total} store(s) healthy`)
+    }
+
+    return { ok: true, hasIssues: issues > 0, message: lines.join("\n"), data }
+  } catch (e) {
+    return {
+      ok: false,
+      hasIssues: true,
+      message: `⚠️ *HEALTH CHECK UNAVAILABLE*\nError fetching: ${e.message}`,
+    }
+  }
+}

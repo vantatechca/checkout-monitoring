@@ -1,7 +1,7 @@
 import http from "node:http"
 import { runMonitor } from "./monitor.js"
 import { broadcast } from "./notify.js"
-import { getRouterStatus } from "./workerStatus.js"
+import { getRouterStatus, getHealthCheck } from "./workerStatus.js"
 
 const PORT = Number(process.env.PORT) || 3000
 const CHECK_INTERVAL_MS = Number(process.env.CHECK_INTERVAL_MS) || 30 * 60 * 1000
@@ -94,6 +94,38 @@ function formatBridgeAlert(alert) {
       .join("\n")
   }
 
+  // Store-specific Shopify failure modes pushed by the bridge's health check
+  // or live error handling. Same shape: { store, shop, error_detail }.
+  const storeAlertMap = {
+    store_frozen:   { emoji: "🧊", title: "STORE FROZEN" },
+    store_suspended:{ emoji: "🚫", title: "STORE SUSPENDED" },
+    store_locked:   { emoji: "🔒", title: "STORE LOCKED" },
+    token_invalid:  { emoji: "🔑", title: "TOKEN INVALID" },
+  }
+  if (storeAlertMap[alert.type]) {
+    const { emoji, title } = storeAlertMap[alert.type]
+    return [
+      `${emoji} *${title}*`,
+      `*Store:* ${alert.store || "unknown"}${alert.shop ? ` (${alert.shop})` : ""}`,
+      alert.error_code ? `*Code:* ${alert.error_code}` : null,
+      alert.error_detail ? `*Detail:* ${alert.error_detail}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n")
+  }
+
+  if (alert.type === "health_check_failed") {
+    const total = alert.total_stores ?? "?"
+    const healthy = alert.healthy ?? "?"
+    const issues = alert.issues || "(unspecified)"
+    return [
+      `🚨 *HEALTH CHECK FAILED*`,
+      typeof issues === "string" ? issues : JSON.stringify(issues),
+      ``,
+      `*Healthy:* ${healthy}/${total}`,
+    ].join("\n")
+  }
+
   if (alert.type === "volume_reset") {
     // Flatten the stores list. The bridge sometimes wraps it as [[...]] when
     // using stores.map() directly inside an array literal — handle both.
@@ -143,6 +175,7 @@ const server = http.createServer(async (req, res) => {
           "  GET  /trigger       — force-run + force-send: bypasses 2h OK + 4h router throttles",
           "  GET  /test-alert    — send a test message to WhatsApp, Telegram, Discord",
           "  GET  /router-status — fetch bridge router status and broadcast to Telegram + Discord",
+          "  GET  /health-check  — fetch bridge health-check and broadcast to Telegram + Discord",
           "  POST /alert         — inbound alerts from the bridge Cloudflare Worker",
           "",
           `Auto-runs every ${Math.round(CHECK_INTERVAL_MS / 60000)} min.`,
@@ -190,12 +223,25 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, status)
     }
 
+    if (path === "/health-check" && req.method === "GET") {
+      if (!authorized(url)) return text(res, 401, "Unauthorized")
+      const health = await getHealthCheck()
+      if (health.message) {
+        await broadcast(health.message, null, ["telegram", "discord"])
+      }
+      return json(res, 200, health)
+    }
+
     // Inbound alerts pushed by the bridge Cloudflare Worker.
     // Bridge should POST JSON like:
-    //   { type: "limit_exceeded", store, volume, limit, source }
-    //   { type: "checkout_error", store, shop, error_code, error_detail, source }
-    //   { type: "worker_exception", worker, error_code, error_detail, ray_id }
-    // and include header X-Alert-Secret: <BRIDGE_ALERT_SECRET> if configured.
+    //   { type: "limit_exceeded",      store, volume, limit, source }
+    //   { type: "checkout_error",      store, shop, error_code, error_detail, source }
+    //   { type: "worker_exception",    worker, error_code, error_detail, ray_id }
+    //   { type: "volume_reset",        message?, stores: [...] }
+    //   { type: "store_frozen"|"store_suspended"|"store_locked"|"token_invalid",
+    //                                  store, shop, error_code?, error_detail }
+    //   { type: "health_check_failed", issues, healthy, total_stores }
+    // Include header X-Alert-Secret: <BRIDGE_ALERT_SECRET> if configured.
     if (path === "/alert" && req.method === "POST") {
       if (BRIDGE_ALERT_SECRET && req.headers["x-alert-secret"] !== BRIDGE_ALERT_SECRET) {
         return text(res, 401, "Unauthorized")

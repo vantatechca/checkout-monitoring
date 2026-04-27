@@ -5,8 +5,8 @@ import { analyzeCheckout } from "./analyze.js"
 import { uploadToCloudinary } from "./upload.js"
 import { sendStatus, broadcast } from "./notify.js"
 import { logToSheets, ensureSheetHeaders } from "./sheets.js"
-import { getRouterStatus } from "./workerStatus.js"
-import { shouldSendAlert, shouldSendRouterStatus } from "./state.js"
+import { getRouterStatus, getHealthCheck } from "./workerStatus.js"
+import { shouldSendAlert, shouldSendRouterStatus, shouldSendHealthCheck } from "./state.js"
 
 function cleanup(...paths) {
   for (const p of paths) {
@@ -150,6 +150,25 @@ export async function runMonitor({ force = false } = {}) {
     console.error("Router status broadcast failed:", e.message)
   }
 
+  // Health check digest — throttled to every HEALTH_CHECK_INTERVAL_MS (default 4h).
+  // Bypasses throttle if any store has issues, so problems land within the next cycle.
+  let health = null
+  try {
+    health = await getHealthCheck()
+    const healthDecision = shouldSendHealthCheck({
+      force,
+      hasIssues: !!health?.hasIssues,
+    })
+    if (health?.message && healthDecision.send) {
+      await broadcast(health.message, null, ["telegram", "discord"])
+      console.log(`🏥 Health check broadcast (${healthDecision.reason})`)
+    } else if (health?.message) {
+      console.log(`⏳ Health check ready but throttled — next digest in <= 4h`)
+    }
+  } catch (e) {
+    console.error("Health check broadcast failed:", e.message)
+  }
+
   const summary = {
     checked_at: new Date().toISOString(),
     total: results.length,
@@ -158,6 +177,7 @@ export async function runMonitor({ force = false } = {}) {
     alerted: results.filter((r) => r.alerted).length,
     stores: results,
     router: router?.data || null,
+    health: health?.data || null,
   }
 
   console.log(`\n${"=".repeat(50)}`)
