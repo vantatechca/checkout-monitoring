@@ -94,6 +94,16 @@ function formatBridgeAlert(alert) {
       .join("\n")
   }
 
+  if (alert.type === "volume_reset") {
+    const list = Array.isArray(alert.stores) ? alert.stores.join(", ") : "(none)"
+    return [
+      `🔄 *MIDNIGHT RESET*`,
+      `All store volumes cleared to $0.`,
+      `Card payments are now active.`,
+      `*Stores:* ${list}`,
+    ].join("\n")
+  }
+
   // Fallback — dump the object so we can see what came in
   return [`ℹ️ *BRIDGE ALERT* (\`${alert.type || "unknown"}\`)`, "```", JSON.stringify(alert, null, 2).slice(0, 1500), "```"].join(
     "\n"
