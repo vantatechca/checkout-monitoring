@@ -86,8 +86,12 @@ export async function getHealthCheck(url = DEFAULT_HEALTH_CHECK_URL) {
     for (const r of results) {
       const status = r.status || "•"
       const name = r.name || "(unknown)"
-      const gateways = r.gateways ? ` | ${r.gateways}` : ""
-      lines.push(`${status} ${name}${gateways}`)
+      // The bridge sends `checkout` on the success path
+      // (e.g. "✅ Can create orders"), and may include `gateways`,
+      // `error`, or `note` on other paths. Show whichever is present.
+      const detail = r.checkout || r.gateways || r.error || r.note || ""
+      const tail = detail ? ` | ${detail}` : ""
+      lines.push(`${status} ${name}${tail}`)
     }
 
     const issues = Number(data.issues) || 0
