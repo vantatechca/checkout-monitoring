@@ -28,6 +28,15 @@ services:
       - key: ROUTER_STATUS_INTERVAL_MS
         value: "14400000"  # 4 h
 
+      # Bridge health-check digest throttle (ms). Issues bypass and broadcast
+      # within the next cycle; healthy state respects the throttle.
+      - key: HEALTH_CHECK_INTERVAL_MS
+        value: "14400000"  # 4 h
+
+      # Bridge health-check endpoint URL.
+      - key: BRIDGE_HEALTH_CHECK_URL
+        value: "https://bridge-7.flystarcafe7.workers.dev/health-check"
+
       # Optional — if set, /check, /trigger and /test-alert require ?token=<value>.
       # Leave unset for open access.
       - key: TRIGGER_TOKEN

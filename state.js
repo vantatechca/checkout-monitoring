@@ -93,3 +93,25 @@ export function shouldSendRouterStatus(opts = {}) {
   }
   return { send: false, reason: "throttled" }
 }
+
+// ─── Health check throttle ───────────────────────────────────────────────────
+// The /health-check digest is throttled to HEALTH_CHECK_INTERVAL_MS (default 4h).
+// Issues bypass the throttle so problems land within the next cycle.
+const HEALTH_CHECK_INTERVAL_MS =
+  Number(process.env.HEALTH_CHECK_INTERVAL_MS) || 4 * 60 * 60 * 1000
+
+export function shouldSendHealthCheck(opts = {}) {
+  const state = loadState()
+  const now = Date.now()
+  const last = state._healthCheckAt || 0
+
+  if (opts.force || opts.hasIssues || now - last >= HEALTH_CHECK_INTERVAL_MS) {
+    state._healthCheckAt = now
+    saveState(state)
+    return {
+      send: true,
+      reason: opts.force ? "forced" : opts.hasIssues ? "issues" : last ? "interval" : "first-run",
+    }
+  }
+  return { send: false, reason: "throttled" }
+}
