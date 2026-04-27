@@ -95,12 +95,27 @@ function formatBridgeAlert(alert) {
   }
 
   if (alert.type === "volume_reset") {
-    const list = Array.isArray(alert.stores) ? alert.stores.join(", ") : "(none)"
+    // Flatten the stores list. The bridge sometimes wraps it as [[...]] when
+    // using stores.map() directly inside an array literal — handle both.
+    let storeList = "(none)"
+    if (Array.isArray(alert.stores)) {
+      const flat = alert.stores.flat ? alert.stores.flat(Infinity) : [].concat(...alert.stores)
+      if (flat.length) storeList = flat.join(", ")
+    }
+
+    // If the worker sent a custom 'message' string, use it as the body.
+    // Otherwise fall back to the default copy.
+    const body = alert.message
+      ? alert.message
+      : [
+          `All store volumes cleared to $0.`,
+          `Card payments are now active.`,
+        ].join("\n")
+
     return [
       `🔄 *MIDNIGHT RESET*`,
-      `All store volumes cleared to $0.`,
-      `Card payments are now active.`,
-      `*Stores:* ${list}`,
+      body,
+      `*Stores:* ${storeList}`,
     ].join("\n")
   }
 
