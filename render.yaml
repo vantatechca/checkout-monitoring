@@ -33,6 +33,13 @@ services:
       - key: HEALTH_CHECK_INTERVAL_MS
         value: "14400000"  # 4 h
 
+      # Master mute switch. Set to "true" / "1" / "yes" / "on" to suppress
+      # ALL outbound sends (Telegram, Discord, WhatsApp, including inbound
+      # /alert from the bridge). Checks still run; nothing leaves the service.
+      # Useful during planned outages or payment-processor downtime.
+      - key: MUTE_ALERTS
+        sync: false
+
       # Bridge health-check endpoint URL.
       - key: BRIDGE_HEALTH_CHECK_URL
         value: "https://bridge-7.flystarcafe7.workers.dev/health-check"

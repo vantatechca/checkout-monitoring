@@ -1,6 +1,6 @@
 import http from "node:http"
 import { runMonitor } from "./monitor.js"
-import { broadcast } from "./notify.js"
+import { broadcast, alertsMuted } from "./notify.js"
 import { getRouterStatus, getHealthCheck } from "./workerStatus.js"
 
 const PORT = Number(process.env.PORT) || 3000
@@ -181,6 +181,7 @@ const server = http.createServer(async (req, res) => {
           `Auto-runs every ${Math.round(CHECK_INTERVAL_MS / 60000)} min.`,
           `Every run: per-store screenshot + alert (OK every 2h, PROBLEM every 30min).`,
           `Router status digest broadcasts every 4h (or on demand via /router-status).`,
+          alertsMuted() ? "🔇 MUTE_ALERTS is ON — checks still run, but no Telegram/Discord/WhatsApp sends." : "",
           TRIGGER_TOKEN ? "Protected endpoints require ?token=<TRIGGER_TOKEN>." : "",
           BRIDGE_ALERT_SECRET ? "POST /alert requires X-Alert-Secret header." : "",
         ].join("\n")

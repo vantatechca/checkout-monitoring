@@ -158,10 +158,25 @@ async function sendDiscord(body, screenshotUrl) {
   }
 }
 
+// ─── Mute switch ─────────────────────────────────────────────────────────────
+// When MUTE_ALERTS is truthy in env, every fanOut call short-circuits and
+// returns muted=true without hitting WhatsApp/Telegram/Discord. The check
+// happens at every send, so toggling the env var on Render takes effect
+// after the next service restart (~1 min).
+export function alertsMuted() {
+  const v = (process.env.MUTE_ALERTS || "").toLowerCase().trim()
+  return v === "1" || v === "true" || v === "yes" || v === "on"
+}
+
 // ─── Fan-out helpers ─────────────────────────────────────────────────────────
 // channels defaults to all three; pass e.g. ["telegram", "discord"] to skip
 // WhatsApp for high-volume or cost-sensitive alerts.
 async function fanOut(numbers, body, screenshotUrl, channels = ["whatsapp", "telegram", "discord"]) {
+  if (alertsMuted()) {
+    console.log("🔇 MUTE_ALERTS is on — suppressing send. Preview:", body.slice(0, 100).replace(/\n/g, " "))
+    return { whatsapp: null, telegram: null, discord: null, muted: true }
+  }
+
   const wantWhatsApp = channels.includes("whatsapp")
   const wantTelegram = channels.includes("telegram")
   const wantDiscord = channels.includes("discord")
