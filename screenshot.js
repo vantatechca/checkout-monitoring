@@ -129,13 +129,22 @@ export async function captureCheckout(store) {
     let bridgeError = null
 
     try {
+      const bridgeHeaders = {
+        "Content-Type": "application/json",
+        Origin: store.storeUrl,
+        Referer: store.storeUrl + "/",
+      }
+      // When MONITOR_SECRET is set, the bridge worker recognises this request
+      // as a synthetic health probe and forces routing to Shopify stores only
+      // (skipping Stripe/Whop rotations) so we always land on an invoice URL
+      // that the visual checks can verify.
+      if (process.env.MONITOR_SECRET) {
+        bridgeHeaders["X-Monitor-Key"] = process.env.MONITOR_SECRET
+      }
+
       const bridgeRes = await fetch(store.bridgeUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Origin: store.storeUrl,
-          Referer: store.storeUrl + "/",
-        },
+        headers: bridgeHeaders,
         body: JSON.stringify(store.bridgePayload),
         redirect: "manual",
       })

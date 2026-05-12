@@ -59,6 +59,12 @@ services:
       - key: BRIDGE_ALERT_SECRET
         sync: false
 
+      # Shared secret sent to the bridge in X-Monitor-Key so the bridge can
+      # identify synthetic probes and force Shopify-only routing (skipping
+      # Stripe/Whop rotations). Must match the bridge's MONITOR_SECRET.
+      - key: MONITOR_SECRET
+        sync: false
+
       # Anthropic
       - key: ANTHROPIC_API_KEY
         sync: false
