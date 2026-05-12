@@ -80,7 +80,12 @@ export async function getHealthCheck(url = DEFAULT_HEALTH_CHECK_URL) {
     }
 
     const data = await resp.json()
-    const results = Array.isArray(data?.results) ? data.results : []
+    const allResults = Array.isArray(data?.results) ? data.results : []
+    // Health-check digest is Shopify-only — the bridge also reports Stripe
+    // processors (e.g. "STRIPE-1"), which we filter out here.
+    const results = allResults.filter(
+      (r) => !/^stripe/i.test(String(r.name || ""))
+    )
 
     const lines = ["🏥 *STORE HEALTH CHECK*"]
     for (const r of results) {
@@ -94,9 +99,9 @@ export async function getHealthCheck(url = DEFAULT_HEALTH_CHECK_URL) {
       lines.push(`${status} ${name}${tail}`)
     }
 
-    const issues = Number(data.issues) || 0
-    const healthy = Number(data.healthy) || 0
-    const total = Number(data.total_stores) || results.length
+    const healthy = results.filter((r) => r.status === "✅").length
+    const issues = results.length - healthy
+    const total = results.length
 
     if (issues > 0) {
       lines.push("")
