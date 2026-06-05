@@ -6,7 +6,13 @@ import { uploadToCloudinary } from "./upload.js"
 import { sendStatus, broadcast } from "./notify.js"
 import { logToSheets, ensureSheetHeaders } from "./sheets.js"
 import { getRouterStatus, getHealthCheck } from "./workerStatus.js"
-import { shouldSendAlert, shouldSendRouterStatus, shouldSendHealthCheck } from "./state.js"
+import { getPymtzSummary } from "./pymtz.js"
+import {
+  shouldSendAlert,
+  shouldSendRouterStatus,
+  shouldSendHealthCheck,
+  shouldSendPymtzDigest,
+} from "./state.js"
 
 function cleanup(...paths) {
   for (const p of paths) {
@@ -43,8 +49,18 @@ async function checkStore(store, { force = false } = {}) {
       isOk = false
       detail = shot.error || "Unknown upstream error"
       result = `PROBLEM: ${detail}`
-      via = "bridge-error"
+      via = shot.via || "bridge-error"
       console.log(`  ✗ ${detail}`)
+    } else if (shot.altCheckout) {
+      // Bridge produced a valid hosted-processor checkout (e.g. Helcim Pay) that
+      // doesn't 302 to a Shopify invoice URL. The checkout token's existence IS
+      // the health signal — there's no Shopify checkout page to inspect, so skip
+      // the Vision call instead of mis-flagging it.
+      isOk = true
+      detail = shot.altCheckout.detail
+      result = "OK"
+      via = `alt-checkout:${shot.altCheckout.processor}`
+      console.log(`  ✓ OK [via ${via}] — ${detail}`)
     } else {
       const analysis = await analyzeCheckout(store, topPath, bottomPath, pageText)
       isOk = analysis.isOk
@@ -169,6 +185,26 @@ export async function runMonitor({ force = false } = {}) {
     console.error("Health check broadcast failed:", e.message)
   }
 
+  // Pymtz transactions digest — throttled to PYMTZ_DIGEST_INTERVAL_MS (default 1h).
+  // Covers every configured pymtz account; returns configured:false (and skips
+  // the throttle) when no PYMTZ_API_KEY* is set, so it's a no-op when off.
+  let pymtz = null
+  try {
+    const summary = await getPymtzSummary()
+    if (summary.configured && summary.message) {
+      pymtz = summary
+      const pymtzDecision = shouldSendPymtzDigest({ force })
+      if (pymtzDecision.send) {
+        await broadcast(summary.message, null, ["telegram", "discord"])
+        console.log(`💳 Pymtz transactions broadcast (${pymtzDecision.reason})`)
+      } else {
+        console.log(`⏳ Pymtz digest ready but throttled — next digest in <= 1h`)
+      }
+    }
+  } catch (e) {
+    console.error("Pymtz digest broadcast failed:", e.message)
+  }
+
   const summary = {
     checked_at: new Date().toISOString(),
     total: results.length,
@@ -178,6 +214,7 @@ export async function runMonitor({ force = false } = {}) {
     stores: results,
     router: router?.data || null,
     health: health?.data || null,
+    pymtz: pymtz?.data || null,
   }
 
   console.log(`\n${"=".repeat(50)}`)
