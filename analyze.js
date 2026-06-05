@@ -52,6 +52,8 @@ const FAILURE_PATTERNS = [
   { re: /\bdaily\s+checkout\s+limit\s+reached\b/i, tag: "Bridge daily checkout limit reached" },
   { re: /\bcheckout\s+(is\s+)?unavailable\b/i, tag: "Checkout unavailable" },
   { re: /\bno\s+(available\s+)?payment\s+(methods|gateways)\b/i, tag: "No payment methods available" },
+  { re: /\bcan(?:['’]?t|not)\s+accept\s+payments\b/i, tag: "Store can't accept payments right now" },
+  { re: /\bunable\s+to\s+accept\s+payments\b/i, tag: "Store unable to accept payments" },
   { re: /\bchecking\s+your\s+browser\b/i, tag: "Cloudflare bot challenge" },
   { re: /\bverify\s+you\s+are\s+human\b/i, tag: "Bot verification blocking" },
   { re: /\bsomething\s+went\s+wrong\b/i, tag: "Generic error ('Something went wrong')" },

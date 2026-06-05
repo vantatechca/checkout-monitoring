@@ -56,11 +56,25 @@ async function sendWhatsApp(numbers, body, screenshotUrl) {
 }
 
 // ─── Telegram ────────────────────────────────────────────────────────────────
+// Our messages use `*bold*` markup. Telegram's legacy "Markdown" parser is
+// fragile — a lone `_`, `[` or `` ` `` (common in checkout URLs) breaks the whole
+// message. HTML mode only treats `<`, `>`, `&` specially, so we escape those and
+// convert `*bold*` → <b>bold</b>. URLs with underscores then pass through fine.
+function toTelegramHtml(body) {
+  const escaped = String(body)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+  return escaped.replace(/\*([^*\n]+)\*/g, "<b>$1</b>")
+}
+
 async function sendTelegram(body, screenshotUrl) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_IDS.length) {
     console.warn("Telegram not configured — skipping")
     return { ok: false, reason: "not_configured" }
   }
+
+  const html = toTelegramHtml(body)
 
   const results = await Promise.allSettled(
     TELEGRAM_CHAT_IDS.map(async (chatId) => {
@@ -71,8 +85,8 @@ async function sendTelegram(body, screenshotUrl) {
           body: JSON.stringify({
             chat_id: chatId,
             photo: screenshotUrl,
-            caption: body,
-            parse_mode: "Markdown",
+            caption: html,
+            parse_mode: "HTML",
           }),
         })
         const data = await resp.json()
@@ -85,8 +99,8 @@ async function sendTelegram(body, screenshotUrl) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chat_id: chatId,
-          text: body,
-          parse_mode: "Markdown",
+          text: html,
+          parse_mode: "HTML",
         }),
       })
       const data = await resp.json()
@@ -198,12 +212,18 @@ export async function sendStatus(store, { isOk, detail, screenshotUrl = null, pa
     ? `*Status:* No issues detected`
     : `*Issue:* ${detail || "Unknown problem"}`
 
+  // A bridge-error / hosted-processor result reports pageUrl as a huge
+  // `data:text/html,…` URL — useless to a human and full of characters that
+  // break Telegram's Markdown parser. Only show a real http(s) checkout URL.
+  const checkoutUrl =
+    pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : `${store.storeUrl}/checkout`
+
   const body = [
     header,
     ``,
     `*Store:* ${store.name}`,
     statusLine,
-    `*Checkout:* ${pageUrl || store.storeUrl + "/checkout"}`,
+    `*Checkout:* ${checkoutUrl}`,
     `*Time:* ${new Date().toLocaleString("en-CA", { timeZone: "America/Toronto" })} ET`,
   ].join("\n")
 

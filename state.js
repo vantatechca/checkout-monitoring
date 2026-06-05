@@ -1,6 +1,8 @@
 import fs from "fs"
+import os from "os"
+import path from "path"
 
-const STATE_FILE = "/tmp/monitor-state.json"
+const STATE_FILE = path.join(os.tmpdir(), "monitor-state.json")
 
 // How often to send an OK heartbeat for a healthy store.
 // Default 2h — override with OK_ALERT_INTERVAL_MS env var.
@@ -112,6 +114,25 @@ export function shouldSendHealthCheck(opts = {}) {
       send: true,
       reason: opts.force ? "forced" : opts.hasIssues ? "issues" : last ? "interval" : "first-run",
     }
+  }
+  return { send: false, reason: "throttled" }
+}
+
+// ─── Pymtz transactions digest throttle ──────────────────────────────────────
+// The pymtz transactions digest is informational — throttle broadcasts to every
+// PYMTZ_DIGEST_INTERVAL_MS (default 1h).
+const PYMTZ_DIGEST_INTERVAL_MS =
+  Number(process.env.PYMTZ_DIGEST_INTERVAL_MS) || 60 * 60 * 1000
+
+export function shouldSendPymtzDigest(opts = {}) {
+  const state = loadState()
+  const now = Date.now()
+  const last = state._pymtzDigestAt || 0
+
+  if (opts.force || now - last >= PYMTZ_DIGEST_INTERVAL_MS) {
+    state._pymtzDigestAt = now
+    saveState(state)
+    return { send: true, reason: opts.force ? "forced" : last ? "interval" : "first-run" }
   }
   return { send: false, reason: "throttled" }
 }

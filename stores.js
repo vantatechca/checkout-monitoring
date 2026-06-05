@@ -10,22 +10,13 @@
 // ─────────────────────────────────────────────
 
 export const stores = [
-   {
+  {
     id: "toronto-peptides",
     name: "Toronto Peptides",
     storeUrl: "https://torontopeptides.ca",
-    bridgeUrl: "https://bridge-7.flystarcafe7.workers.dev/s2s",
-    bridgePayload: {
-      source_store: "torontopeptides.com",
-      currency: "CAD",
-      lines: [
-        {
-          title: "BPC-157 5mg",
-          price: "49.99",
-          quantity: 1,
-        }
-      ]
-    }
+    // "storefront" = simulate the real customer checkout (add-to-cart → /checkout)
+    // and screenshot the live checkout page. Omit `variantId` to auto-pick the
+    // first in-stock product from /products.json each run.
+    checkout: "storefront",
   },
-  
 ]
