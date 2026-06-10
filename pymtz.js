@@ -178,29 +178,12 @@ function fmtMoney(map) {
     .join(" · ")
 }
 
-// Max transactions to itemise per account in the alert (newest first).
-const LIST_LIMIT = Number(process.env.PYMTZ_LIST_LIMIT) || 12
-
-// Status → emoji for the per-transaction line.
-const STATUS_ICON = { completed: "✅", pending: "⏳", failed: "❌", expired: "⌛" }
-
 // The three headline statuses, in display order.
 const STATUS_META = [
   ["completed", "✅", "Succeeded"],
   ["pending", "⏳", "Pending"],
   ["failed", "❌", "Failed"],
 ]
-
-// One itemised line per transaction: "  ✅ Jun 9, 11:26 a.m. · $108.00 · Retatrutide"
-function txnLine(p) {
-  const when = asOfFmt.format(new Date(p.created_at ?? p.createdAt ?? Date.now()))
-  const cur = String(p.currency || "").toUpperCase()
-  const n = Number(p.amount) || 0
-  const money = cur === "USD" ? `$${nf.format(n)}` : `${cur} ${nf.format(n)}`
-  const desc = String(p.description || "—").trim().slice(0, 28)
-  const icon = STATUS_ICON[String(p.status || "").toLowerCase()] || "•"
-  return `  ${icon} ${when} · ${money} · ${desc}`
-}
 
 // Status breakdown lines.
 //   withWord=true  → "  ✅ 3 Succeeded · $369.00"  (the 24h section)
@@ -313,13 +296,6 @@ export async function getPymtzSummary({ baseUrl = DEFAULT_BASE_URL } = {}) {
       `📊 *ALL TIME* · ${all.total} txn${all.total === 1 ? "" : "s"}${r.capped ? " (recent)" : ""}`,
       ...statusLines(all.counts, all.sums, false),
     ]
-    // Itemised recent transactions.
-    if (recent.length) {
-      lines.push(SEP)
-      lines.push(`🧾 *RECENT*`)
-      for (const p of recent.slice(0, LIST_LIMIT)) lines.push(txnLine(p))
-      if (rec.total > LIST_LIMIT) lines.push(`  …and ${rec.total - LIST_LIMIT} more`)
-    }
     if (r.capped) {
       lines.push(`⚠️ All-time shows most-recent records only (exceeds fetch cap)`)
     }
