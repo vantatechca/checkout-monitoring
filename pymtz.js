@@ -214,16 +214,21 @@ function totalsByCurrency(payments) {
   return m
 }
 
-// Compact status breakdown line, e.g. "✅ 2 · ⏳ 9 · ❌ 1 · ⌛ 0".
-function statusSummary(counts) {
-  const parts = [
-    `✅ ${counts.completed}`,
-    `⏳ ${counts.pending}`,
-    `❌ ${counts.failed}`,
-    `⌛ ${counts.expired}`,
+// Status breakdown with count AND amount, one line each:
+//   "  ✅ Completed: 3 · USD 688.00"
+function statusSummaryLines(counts, sums) {
+  const amt = (m) => {
+    const s = fmtSums(m)
+    return s ? ` · ${s}` : ""
+  }
+  const lines = [
+    `  ✅ Completed: ${counts.completed}${amt(sums.completed)}`,
+    `  ⏳ Pending: ${counts.pending}${amt(sums.pending)}`,
+    `  ❌ Failed: ${counts.failed}${amt(sums.failed)}`,
   ]
-  if (counts.other) parts.push(`• ${counts.other}`)
-  return parts.join(" · ")
+  if (counts.expired) lines.push(`  ⌛ Expired: ${counts.expired}${amt(sums.expired)}`)
+  if (counts.other) lines.push(`  • Other: ${counts.other}${amt(sums.other)}`)
+  return lines
 }
 
 // ── Account configuration ────────────────────────────────────────────────────
@@ -283,6 +288,7 @@ export async function getPymtzSummary({ baseUrl = DEFAULT_BASE_URL } = {}) {
   const lines = [`💳 *PYMTZ TRANSACTIONS* — last ${WINDOW_HOURS}h (as of ${asOf})`]
   let grandTotal = 0
   const grandCounts = { completed: 0, pending: 0, failed: 0, expired: 0, other: 0 }
+  const grandStatusSums = { completed: {}, pending: {}, failed: {}, expired: {}, other: {} }
   const grandSums = {}
   let anyOk = false
   let anyFailures = false
@@ -299,14 +305,19 @@ export async function getPymtzSummary({ baseUrl = DEFAULT_BASE_URL } = {}) {
     const curTotals = totalsByCurrency(r.payments)
     const sumStr = fmtSums(curTotals)
     lines.push(`▸ *${r.label}* — ${r.total} txn${r.total === 1 ? "" : "s"}${sumStr ? ` · ${sumStr}` : ""}`)
-    // Per-account status summary.
-    lines.push(`  ${statusSummary(r.counts)}`)
+    // Per-account status breakdown (count + amount each).
+    lines.push(...statusSummaryLines(r.counts, r.sums))
     // Itemised transactions (newest first), capped.
     for (const p of r.payments.slice(0, LIST_LIMIT)) lines.push(txnLine(p))
     if (r.total > LIST_LIMIT) lines.push(`  …and ${r.total - LIST_LIMIT} more`)
     // Accumulate grand totals.
     grandTotal += r.total
-    for (const k of Object.keys(grandCounts)) grandCounts[k] += r.counts[k] || 0
+    for (const k of Object.keys(grandCounts)) {
+      grandCounts[k] += r.counts[k] || 0
+      for (const [cur, v] of Object.entries(r.sums[k] || {})) {
+        grandStatusSums[k][cur] = (grandStatusSums[k][cur] || 0) + v
+      }
+    }
     for (const [cur, v] of Object.entries(curTotals)) grandSums[cur] = (grandSums[cur] || 0) + v
     if (r.counts.failed > 0) anyFailures = true
     if (r.capped) anyCapped = true
@@ -317,7 +328,7 @@ export async function getPymtzSummary({ baseUrl = DEFAULT_BASE_URL } = {}) {
   lines.push(
     `Σ ${grandTotal} transaction${grandTotal === 1 ? "" : "s"}${grandSumStr ? ` · ${grandSumStr}` : ""} in last ${WINDOW_HOURS}h${multi ? " (all accounts)" : ""}`
   )
-  if (multi) lines.push(`   ${statusSummary(grandCounts)}`)
+  if (multi) lines.push(...statusSummaryLines(grandCounts, grandStatusSums))
   if (anyCapped) {
     lines.push(`⚠️ Page cap reached for an account — totals may be partial`)
     console.warn("Pymtz digest: pagination cap hit — totals may be partial")
