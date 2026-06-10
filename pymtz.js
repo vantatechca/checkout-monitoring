@@ -252,12 +252,14 @@ function parseAccounts() {
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
-// Builds one combined digest covering every configured pymtz account. Each
-// account gets its own section (when more than one is configured) plus a
-// grand-total line. A single account renders flat, with no section header.
+// Builds one self-contained digest message PER configured pymtz account (so
+// each account, e.g. Montreal vs Florida, is broadcast as its own message).
+// Each message shows the account's all-time and last-window status breakdowns
+// plus the recent itemized list. Returns { ok, configured, hasFailures, messages }
+// where messages is [{ label, ok, hasFailures, message }].
 export async function getPymtzSummary({ baseUrl = DEFAULT_BASE_URL } = {}) {
   const accounts = parseAccounts()
-  if (!accounts.length) return { ok: false, configured: false, message: null }
+  if (!accounts.length) return { ok: false, configured: false, messages: [] }
 
   const startMs = windowStartMs()
   const asOf = `${asOfFmt.format(new Date())} ${TZ_ABBREV}`
@@ -276,20 +278,18 @@ export async function getPymtzSummary({ baseUrl = DEFAULT_BASE_URL } = {}) {
     })
   )
 
-  const multi = accounts.length > 1
-  const lines = [`💳 *PYMTZ TRANSACTIONS* (as of ${asOf})`]
-  const grandAll = newGrand()
-  const grand24 = newGrand()
+  const IND = "   " // indent for breakdown lines under a sub-heading
+  const messages = []
   let anyOk = false
   let anyFailures = false
-  let anyCapped = false
-
-  const IND = "     " // indent for the breakdown lines under a sub-heading
 
   for (const r of results) {
-    lines.push("")
     if (!r.ok) {
-      lines.push(`▸ *${r.label}* — ⚠️ Unavailable: ${r.error}`)
+      messages.push({
+        label: r.label,
+        ok: false,
+        message: `💳 *PYMTZ — ${r.label}*\n⚠️ Unavailable: ${r.error}`,
+      })
       continue
     }
     anyOk = true
@@ -301,48 +301,23 @@ export async function getPymtzSummary({ baseUrl = DEFAULT_BASE_URL } = {}) {
     })
     const rec = aggregate(recent)
 
-    lines.push(`▸ *${r.label}*`)
+    const lines = [`💳 *PYMTZ — ${r.label}* (as of ${asOf})`]
     // All-time section.
-    lines.push(`  📊 *All time* — ${all.total} txn${all.total === 1 ? "" : "s"}${r.capped ? " (most recent)" : ""}`)
+    lines.push(`📊 *All time* — ${all.total} txn${all.total === 1 ? "" : "s"}${r.capped ? " (most recent)" : ""}`)
     lines.push(...statusSummaryLines(all.counts, all.sums, IND))
     // Last-window section + itemised list.
-    lines.push(`  🕒 *Last ${WINDOW_HOURS}h* — ${rec.total} txn${rec.total === 1 ? "" : "s"}`)
+    lines.push(`🕒 *Last ${WINDOW_HOURS}h* — ${rec.total} txn${rec.total === 1 ? "" : "s"}`)
     lines.push(...statusSummaryLines(rec.counts, rec.sums, IND))
     for (const p of recent.slice(0, LIST_LIMIT)) lines.push(txnLine(p))
-    if (rec.total > LIST_LIMIT) lines.push(`  …and ${rec.total - LIST_LIMIT} more`)
+    if (rec.total > LIST_LIMIT) lines.push(`…and ${rec.total - LIST_LIMIT} more`)
+    if (r.capped) {
+      lines.push(`⚠️ All-time shows most-recent records only (account exceeds fetch cap)`)
+    }
 
-    accInto(grandAll, all)
-    grandAll.total += all.total
-    accInto(grand24, rec)
-    grand24.total += rec.total
-    if (rec.counts.failed > 0) anyFailures = true
-    if (r.capped) anyCapped = true
-  }
-
-  if (multi) {
-    lines.push("")
-    lines.push(`Σ *All time* — ${grandAll.total} txn${grandAll.total === 1 ? "" : "s"} (all accounts)`)
-    lines.push(...statusSummaryLines(grandAll.counts, grandAll.sums, IND))
-    lines.push(`Σ *Last ${WINDOW_HOURS}h* — ${grand24.total} txn${grand24.total === 1 ? "" : "s"} (all accounts)`)
-    lines.push(...statusSummaryLines(grand24.counts, grand24.sums, IND))
-  }
-  if (anyCapped) {
-    lines.push(`⚠️ All-time totals show most-recent records only (account exceeds the fetch cap)`)
-    console.warn("Pymtz digest: pagination cap hit — totals may be partial")
+    const hasFailures = rec.counts.failed > 0
+    if (hasFailures) anyFailures = true
+    messages.push({ label: r.label, ok: true, hasFailures, message: lines.join("\n") })
   }
 
-  return {
-    ok: anyOk,
-    configured: true,
-    hasFailures: anyFailures,
-    message: lines.join("\n"),
-    data: {
-      windowHours: WINDOW_HOURS,
-      asOf,
-      allTimeTotal: grandAll.total,
-      last24hTotal: grand24.total,
-      allTimeCounts: grandAll.counts,
-      last24hCounts: grand24.counts,
-    },
-  }
+  return { ok: anyOk, configured: true, hasFailures: anyFailures, messages }
 }
