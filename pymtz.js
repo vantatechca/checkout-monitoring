@@ -279,6 +279,7 @@ export async function getPymtzSummary({ baseUrl = DEFAULT_BASE_URL } = {}) {
   )
 
   const IND = "   " // indent for breakdown lines under a sub-heading
+  const RULE = "━━━━━━━━━━━━━━━━━━━━"
   const messages = []
   let anyOk = false
   let anyFailures = false
@@ -301,15 +302,25 @@ export async function getPymtzSummary({ baseUrl = DEFAULT_BASE_URL } = {}) {
     })
     const rec = aggregate(recent)
 
-    const lines = [`💳 *PYMTZ — ${r.label}* (as of ${asOf})`]
-    // All-time section.
-    lines.push(`📊 *All time* — ${all.total} txn${all.total === 1 ? "" : "s"}${r.capped ? " (most recent)" : ""}`)
-    lines.push(...statusSummaryLines(all.counts, all.sums, IND))
-    // Last-window section + itemised list.
-    lines.push(`🕒 *Last ${WINDOW_HOURS}h* — ${rec.total} txn${rec.total === 1 ? "" : "s"}`)
-    lines.push(...statusSummaryLines(rec.counts, rec.sums, IND))
-    for (const p of recent.slice(0, LIST_LIMIT)) lines.push(txnLine(p))
-    if (rec.total > LIST_LIMIT) lines.push(`…and ${rec.total - LIST_LIMIT} more`)
+    const lines = [
+      RULE,
+      `💳 *PYMTZ — ${r.label}*`,
+      `🗓 ${asOf}`,
+      RULE,
+      // All-time section.
+      `📊 *All time* — ${all.total} txn${all.total === 1 ? "" : "s"}${r.capped ? " (most recent)" : ""}`,
+      ...statusSummaryLines(all.counts, all.sums, IND),
+      "",
+      // Last-window section.
+      `🕒 *Last ${WINDOW_HOURS}h* — ${rec.total} txn${rec.total === 1 ? "" : "s"}`,
+      ...statusSummaryLines(rec.counts, rec.sums, IND),
+    ]
+    // Itemised recent transactions.
+    if (recent.length) {
+      lines.push("")
+      for (const p of recent.slice(0, LIST_LIMIT)) lines.push(txnLine(p))
+      if (rec.total > LIST_LIMIT) lines.push(`…and ${rec.total - LIST_LIMIT} more`)
+    }
     if (r.capped) {
       lines.push(`⚠️ All-time shows most-recent records only (account exceeds fetch cap)`)
     }
