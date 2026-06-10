@@ -191,12 +191,17 @@ export async function runMonitor({ force = false } = {}) {
   let pymtz = null
   try {
     const summary = await getPymtzSummary()
-    if (summary.configured && summary.message) {
+    if (summary.configured && summary.messages?.length) {
       pymtz = summary
       const pymtzDecision = shouldSendPymtzDigest({ force })
       if (pymtzDecision.send) {
-        await broadcast(summary.message, null, ["telegram", "discord"])
-        console.log(`💳 Pymtz transactions broadcast (${pymtzDecision.reason})`)
+        // One message per account (Montreal, Florida, …) — sent separately.
+        for (const m of summary.messages) {
+          if (m.message) await broadcast(m.message, null, ["telegram", "discord"])
+        }
+        console.log(
+          `💳 Pymtz broadcast — ${summary.messages.length} account(s) (${pymtzDecision.reason})`
+        )
       } else {
         console.log(`⏳ Pymtz digest ready but throttled — next digest in <= 1h`)
       }
@@ -214,7 +219,7 @@ export async function runMonitor({ force = false } = {}) {
     stores: results,
     router: router?.data || null,
     health: health?.data || null,
-    pymtz: pymtz?.data || null,
+    pymtz: pymtz ? pymtz.messages.map((m) => m.label) : null,
   }
 
   console.log(`\n${"=".repeat(50)}`)

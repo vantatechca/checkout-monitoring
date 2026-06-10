@@ -55,11 +55,10 @@ function windowStartMs() {
 }
 
 // ── Fetch ────────────────────────────────────────────────────────────────────
-// Page through /payments newest-first and collect everything created on/after
-// `startMs`. Stops as soon as a page contains an older record (list is assumed
-// newest-first, which is the documented default order). Hard page cap guards
+// Page through ALL of /payments (newest-first). The renderer derives both the
+// all-time totals and the rolling window from the full set. Hard page cap guards
 // against runaway pagination; if hit we flag `capped` so the digest can say so.
-async function fetchRecentPayments(apiKey, baseUrl, startMs) {
+async function fetchAllPayments(apiKey, baseUrl) {
   const MAX_PAGES = 50 // 50 × 100 = 5000 records
   const payments = []
   let cursor = null
@@ -84,17 +83,7 @@ async function fetchRecentPayments(apiKey, baseUrl, startMs) {
     pages++
     if (!batch.length) break
 
-    let reachedOlder = false
-    for (const p of batch) {
-      const created = Date.parse(p.created_at ?? p.createdAt ?? "")
-      if (Number.isFinite(created) && created < startMs) {
-        reachedOlder = true
-        continue
-      }
-      payments.push(p)
-    }
-
-    if (reachedOlder) break // everything past here is older than today
+    for (const p of batch) payments.push(p)
 
     const hasMore = json.has_more ?? batch.length === 100
     if (!hasMore) break
@@ -135,7 +124,7 @@ async function pymtzLogin(email, password, origin) {
   return data.token
 }
 
-async function fetchDashboardTransactions(account, origin, startMs) {
+async function fetchDashboardTransactions(account, origin) {
   const token = await pymtzLogin(account.email, account.password, origin)
   const res = await fetch(`${origin}/api/transactions?limit=200`, {
     headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
@@ -146,21 +135,20 @@ async function fetchDashboardTransactions(account, origin, startMs) {
   }
   const data = await res.json()
   const raw = Array.isArray(data) ? data : data.transactions || data.data || []
-  const payments = []
-  for (const t of raw) {
-    const created = Date.parse(t.created_at ?? t.createdAt ?? t.date ?? "")
-    if (Number.isFinite(created) && created < startMs) continue
-    payments.push({
+  const payments = raw
+    .filter((t) => String(t.status || "").toLowerCase() !== "test") // drop test-mode noise
+    .map((t) => ({
       id: t.id,
       amount: (Number(t.amount) || 0) / 100, // dashboard amounts are in cents
       currency: String(t.currency || "USD").toUpperCase(),
       status: normalizeStatus(t.status),
       description: t.description || t.name || "—",
       created_at: t.created_at ?? t.createdAt ?? t.date,
-    })
-  }
-  // /api/transactions caps at 200; flag if we likely truncated the window.
-  const capped = raw.length >= 200 && payments.length === raw.length
+    }))
+  // The account may have more transactions than the 200-row cap; flag so the
+  // all-time totals can be marked partial. Compare against the raw row count
+  // (before the test-transaction filter), not the filtered length.
+  const capped = Number.isFinite(data.total) && data.total > raw.length
   return { payments, capped }
 }
 
@@ -180,50 +168,39 @@ function aggregate(payments) {
   return { counts, sums, total: payments.length }
 }
 
-// "CAD 1,840.00 · USD 120.00" (only non-zero currencies)
-function fmtSums(map) {
-  return Object.entries(map)
-    .filter(([, v]) => v)
-    .map(([cur, v]) => `${cur} ${nf.format(v)}`)
+// Format a currency map as money: "$369.00" for USD, "CAD 12.00" otherwise.
+// Returns "" when the map has no non-zero amounts.
+function fmtMoney(map) {
+  const entries = Object.entries(map || {}).filter(([, v]) => v)
+  if (!entries.length) return ""
+  return entries
+    .map(([cur, v]) => (cur === "USD" ? `$${nf.format(v)}` : `${cur} ${nf.format(v)}`))
     .join(" · ")
 }
 
-// Max transactions to itemise per account in the alert (newest first).
-const LIST_LIMIT = Number(process.env.PYMTZ_LIST_LIMIT) || 12
+// The three headline statuses, in display order.
+const STATUS_META = [
+  ["completed", "✅", "Succeeded"],
+  ["pending", "⏳", "Pending"],
+  ["failed", "❌", "Failed"],
+]
 
-// Status → emoji for the per-transaction line.
-const STATUS_ICON = { completed: "✅", pending: "⏳", failed: "❌", expired: "⌛" }
-
-// One itemised line per transaction.
-function txnLine(p) {
-  const when = asOfFmt.format(new Date(p.created_at ?? p.createdAt ?? Date.now()))
-  const cur = String(p.currency || "").toUpperCase()
-  const amt = nf.format(Number(p.amount) || 0)
-  const desc = String(p.description || "—").trim().slice(0, 30)
-  const icon = STATUS_ICON[String(p.status || "").toLowerCase()] || "•"
-  return `  ${icon} ${when} · ${cur} ${amt} · ${desc}`
-}
-
-// Total amount by currency across a list of payments.
-function totalsByCurrency(payments) {
-  const m = {}
-  for (const p of payments) {
-    const c = String(p.currency || "—").toUpperCase()
-    m[c] = (m[c] || 0) + (Number(p.amount) || 0)
+// Status breakdown lines.
+//   withWord=true  → "  ✅ 3 Succeeded · $369.00"  (the 24h section)
+//   withWord=false → "  ✅ 3 · $369.00"            (the all-time section)
+function statusLines(counts, sums, withWord) {
+  const out = []
+  for (const [key, icon, word] of STATUS_META) {
+    const n = counts[key] || 0
+    const money = fmtMoney(sums[key])
+    const tail = n > 0 && money ? ` · ${money}` : ""
+    out.push(withWord ? `  ${icon} ${n} ${word}${tail}` : `  ${icon} ${n}${tail}`)
   }
-  return m
-}
-
-// Compact status breakdown line, e.g. "✅ 2 · ⏳ 9 · ❌ 1 · ⌛ 0".
-function statusSummary(counts) {
-  const parts = [
-    `✅ ${counts.completed}`,
-    `⏳ ${counts.pending}`,
-    `❌ ${counts.failed}`,
-    `⌛ ${counts.expired}`,
-  ]
-  if (counts.other) parts.push(`• ${counts.other}`)
-  return parts.join(" · ")
+  if (counts.expired) {
+    const tail = fmtMoney(sums.expired)
+    out.push(`  ⌛ ${counts.expired}${withWord ? " Expired" : ""}${tail ? ` · ${tail}` : ""}`)
+  }
+  return out
 }
 
 // ── Account configuration ────────────────────────────────────────────────────
@@ -255,12 +232,14 @@ function parseAccounts() {
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
-// Builds one combined digest covering every configured pymtz account. Each
-// account gets its own section (when more than one is configured) plus a
-// grand-total line. A single account renders flat, with no section header.
+// Builds one self-contained digest message PER configured pymtz account (so
+// each account, e.g. Montreal vs Florida, is broadcast as its own message).
+// Each message shows the account's all-time and last-window status breakdowns
+// plus the recent itemized list. Returns { ok, configured, hasFailures, messages }
+// where messages is [{ label, ok, hasFailures, message }].
 export async function getPymtzSummary({ baseUrl = DEFAULT_BASE_URL } = {}) {
   const accounts = parseAccounts()
-  if (!accounts.length) return { ok: false, configured: false, message: null }
+  if (!accounts.length) return { ok: false, configured: false, messages: [] }
 
   const startMs = windowStartMs()
   const asOf = `${asOfFmt.format(new Date())} ${TZ_ABBREV}`
@@ -270,64 +249,61 @@ export async function getPymtzSummary({ baseUrl = DEFAULT_BASE_URL } = {}) {
       try {
         const { payments, capped } =
           a.mode === "dashboard"
-            ? await fetchDashboardTransactions(a, DASHBOARD_ORIGIN, startMs)
-            : await fetchRecentPayments(a.apiKey, baseUrl, startMs)
-        return { label: a.label, ok: true, mode: a.mode, ...aggregate(payments), capped, payments }
+            ? await fetchDashboardTransactions(a, DASHBOARD_ORIGIN)
+            : await fetchAllPayments(a.apiKey, baseUrl)
+        return { label: a.label, ok: true, mode: a.mode, capped, payments }
       } catch (e) {
         return { label: a.label, ok: false, error: e.message }
       }
     })
   )
 
-  const multi = accounts.length > 1
-  const lines = [`💳 *PYMTZ TRANSACTIONS* — last ${WINDOW_HOURS}h (as of ${asOf})`]
-  let grandTotal = 0
-  const grandCounts = { completed: 0, pending: 0, failed: 0, expired: 0, other: 0 }
-  const grandSums = {}
+  const TOP = "╭───────────────────────╮"
+  const BOT = "╰───────────────────────╯"
+  const SEP = "───────────────────────"
+  const messages = []
   let anyOk = false
   let anyFailures = false
-  let anyCapped = false
 
   for (const r of results) {
-    lines.push("")
     if (!r.ok) {
-      lines.push(`▸ *${r.label}* — ⚠️ Unavailable: ${r.error}`)
+      messages.push({
+        label: r.label,
+        ok: false,
+        message: `╭───────────────────────╮\n  💳 *${r.label.toUpperCase()}*\n╰───────────────────────╯\n⚠️ Unavailable: ${r.error}`,
+      })
       continue
     }
     anyOk = true
-    // Header: account name + count + total amount across currencies.
-    const curTotals = totalsByCurrency(r.payments)
-    const sumStr = fmtSums(curTotals)
-    lines.push(`▸ *${r.label}* — ${r.total} txn${r.total === 1 ? "" : "s"}${sumStr ? ` · ${sumStr}` : ""}`)
-    // Per-account status summary.
-    lines.push(`  ${statusSummary(r.counts)}`)
-    // Itemised transactions (newest first), capped.
-    for (const p of r.payments.slice(0, LIST_LIMIT)) lines.push(txnLine(p))
-    if (r.total > LIST_LIMIT) lines.push(`  …and ${r.total - LIST_LIMIT} more`)
-    // Accumulate grand totals.
-    grandTotal += r.total
-    for (const k of Object.keys(grandCounts)) grandCounts[k] += r.counts[k] || 0
-    for (const [cur, v] of Object.entries(curTotals)) grandSums[cur] = (grandSums[cur] || 0) + v
-    if (r.counts.failed > 0) anyFailures = true
-    if (r.capped) anyCapped = true
+
+    const all = aggregate(r.payments)
+    const recent = r.payments.filter((p) => {
+      const c = Date.parse(p.created_at ?? p.createdAt ?? "")
+      return !Number.isFinite(c) || c >= startMs
+    })
+    const rec = aggregate(recent)
+
+    const lines = [
+      TOP,
+      `  💳 *${r.label.toUpperCase()}*`,
+      `  ${asOf}`,
+      BOT,
+      // Last-window section first (the part you act on).
+      `🕒 *LAST ${WINDOW_HOURS}H* · ${rec.total} txn${rec.total === 1 ? "" : "s"}`,
+      ...statusLines(rec.counts, rec.sums, true),
+      SEP,
+      // All-time running totals.
+      `📊 *ALL TIME* · ${all.total} txn${all.total === 1 ? "" : "s"}${r.capped ? " (recent)" : ""}`,
+      ...statusLines(all.counts, all.sums, false),
+    ]
+    if (r.capped) {
+      lines.push(`⚠️ All-time shows most-recent records only (exceeds fetch cap)`)
+    }
+
+    const hasFailures = rec.counts.failed > 0
+    if (hasFailures) anyFailures = true
+    messages.push({ label: r.label, ok: true, hasFailures, message: lines.join("\n") })
   }
 
-  lines.push("")
-  const grandSumStr = fmtSums(grandSums)
-  lines.push(
-    `Σ ${grandTotal} transaction${grandTotal === 1 ? "" : "s"}${grandSumStr ? ` · ${grandSumStr}` : ""} in last ${WINDOW_HOURS}h${multi ? " (all accounts)" : ""}`
-  )
-  if (multi) lines.push(`   ${statusSummary(grandCounts)}`)
-  if (anyCapped) {
-    lines.push(`⚠️ Page cap reached for an account — totals may be partial`)
-    console.warn("Pymtz digest: pagination cap hit — totals may be partial")
-  }
-
-  return {
-    ok: anyOk,
-    configured: true,
-    hasFailures: anyFailures,
-    message: lines.join("\n"),
-    data: { windowHours: WINDOW_HOURS, asOf, grandTotal, accounts: results },
-  }
+  return { ok: anyOk, configured: true, hasFailures: anyFailures, messages }
 }
