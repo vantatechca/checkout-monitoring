@@ -55,11 +55,10 @@ function windowStartMs() {
 }
 
 // ── Fetch ────────────────────────────────────────────────────────────────────
-// Page through /payments newest-first and collect everything created on/after
-// `startMs`. Stops as soon as a page contains an older record (list is assumed
-// newest-first, which is the documented default order). Hard page cap guards
+// Page through ALL of /payments (newest-first). The renderer derives both the
+// all-time totals and the rolling window from the full set. Hard page cap guards
 // against runaway pagination; if hit we flag `capped` so the digest can say so.
-async function fetchRecentPayments(apiKey, baseUrl, startMs) {
+async function fetchAllPayments(apiKey, baseUrl) {
   const MAX_PAGES = 50 // 50 × 100 = 5000 records
   const payments = []
   let cursor = null
@@ -84,17 +83,7 @@ async function fetchRecentPayments(apiKey, baseUrl, startMs) {
     pages++
     if (!batch.length) break
 
-    let reachedOlder = false
-    for (const p of batch) {
-      const created = Date.parse(p.created_at ?? p.createdAt ?? "")
-      if (Number.isFinite(created) && created < startMs) {
-        reachedOlder = true
-        continue
-      }
-      payments.push(p)
-    }
-
-    if (reachedOlder) break // everything past here is older than today
+    for (const p of batch) payments.push(p)
 
     const hasMore = json.has_more ?? batch.length === 100
     if (!hasMore) break
@@ -135,7 +124,7 @@ async function pymtzLogin(email, password, origin) {
   return data.token
 }
 
-async function fetchDashboardTransactions(account, origin, startMs) {
+async function fetchDashboardTransactions(account, origin) {
   const token = await pymtzLogin(account.email, account.password, origin)
   const res = await fetch(`${origin}/api/transactions?limit=200`, {
     headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
@@ -146,21 +135,17 @@ async function fetchDashboardTransactions(account, origin, startMs) {
   }
   const data = await res.json()
   const raw = Array.isArray(data) ? data : data.transactions || data.data || []
-  const payments = []
-  for (const t of raw) {
-    const created = Date.parse(t.created_at ?? t.createdAt ?? t.date ?? "")
-    if (Number.isFinite(created) && created < startMs) continue
-    payments.push({
-      id: t.id,
-      amount: (Number(t.amount) || 0) / 100, // dashboard amounts are in cents
-      currency: String(t.currency || "USD").toUpperCase(),
-      status: normalizeStatus(t.status),
-      description: t.description || t.name || "—",
-      created_at: t.created_at ?? t.createdAt ?? t.date,
-    })
-  }
-  // /api/transactions caps at 200; flag if we likely truncated the window.
-  const capped = raw.length >= 200 && payments.length === raw.length
+  const payments = raw.map((t) => ({
+    id: t.id,
+    amount: (Number(t.amount) || 0) / 100, // dashboard amounts are in cents
+    currency: String(t.currency || "USD").toUpperCase(),
+    status: normalizeStatus(t.status),
+    description: t.description || t.name || "—",
+    created_at: t.created_at ?? t.createdAt ?? t.date,
+  }))
+  // The account may have more transactions than the 200-row cap; flag so the
+  // all-time totals can be marked partial.
+  const capped = Number.isFinite(data.total) && data.total > payments.length
   return { payments, capped }
 }
 
@@ -204,31 +189,38 @@ function txnLine(p) {
   return `  ${icon} ${when} · ${cur} ${amt} · ${desc}`
 }
 
-// Total amount by currency across a list of payments.
-function totalsByCurrency(payments) {
-  const m = {}
-  for (const p of payments) {
-    const c = String(p.currency || "—").toUpperCase()
-    m[c] = (m[c] || 0) + (Number(p.amount) || 0)
-  }
-  return m
-}
-
 // Status breakdown with count AND amount, one line each:
-//   "  ✅ Completed: 3 · USD 688.00"
-function statusSummaryLines(counts, sums) {
+//   "     ✅ Completed: 3 · USD 688.00"
+function statusSummaryLines(counts, sums, indent = "  ") {
   const amt = (m) => {
     const s = fmtSums(m)
     return s ? ` · ${s}` : ""
   }
   const lines = [
-    `  ✅ Completed: ${counts.completed}${amt(sums.completed)}`,
-    `  ⏳ Pending: ${counts.pending}${amt(sums.pending)}`,
-    `  ❌ Failed: ${counts.failed}${amt(sums.failed)}`,
+    `${indent}✅ Completed: ${counts.completed}${amt(sums.completed)}`,
+    `${indent}⏳ Pending: ${counts.pending}${amt(sums.pending)}`,
+    `${indent}❌ Failed: ${counts.failed}${amt(sums.failed)}`,
   ]
-  if (counts.expired) lines.push(`  ⌛ Expired: ${counts.expired}${amt(sums.expired)}`)
-  if (counts.other) lines.push(`  • Other: ${counts.other}${amt(sums.other)}`)
+  if (counts.expired) lines.push(`${indent}⌛ Expired: ${counts.expired}${amt(sums.expired)}`)
+  if (counts.other) lines.push(`${indent}• Other: ${counts.other}${amt(sums.other)}`)
   return lines
+}
+
+// Merge an aggregate() result into a grand accumulator {counts, sums}.
+function accInto(grand, agg) {
+  for (const k of Object.keys(grand.counts)) {
+    grand.counts[k] += agg.counts[k] || 0
+    for (const [cur, v] of Object.entries(agg.sums[k] || {})) {
+      grand.sums[k][cur] = (grand.sums[k][cur] || 0) + v
+    }
+  }
+}
+function newGrand() {
+  return {
+    counts: { completed: 0, pending: 0, failed: 0, expired: 0, other: 0 },
+    sums: { completed: {}, pending: {}, failed: {}, expired: {}, other: {} },
+    total: 0,
+  }
 }
 
 // ── Account configuration ────────────────────────────────────────────────────
@@ -275,9 +267,9 @@ export async function getPymtzSummary({ baseUrl = DEFAULT_BASE_URL } = {}) {
       try {
         const { payments, capped } =
           a.mode === "dashboard"
-            ? await fetchDashboardTransactions(a, DASHBOARD_ORIGIN, startMs)
-            : await fetchRecentPayments(a.apiKey, baseUrl, startMs)
-        return { label: a.label, ok: true, mode: a.mode, ...aggregate(payments), capped, payments }
+            ? await fetchDashboardTransactions(a, DASHBOARD_ORIGIN)
+            : await fetchAllPayments(a.apiKey, baseUrl)
+        return { label: a.label, ok: true, mode: a.mode, capped, payments }
       } catch (e) {
         return { label: a.label, ok: false, error: e.message }
       }
@@ -285,14 +277,14 @@ export async function getPymtzSummary({ baseUrl = DEFAULT_BASE_URL } = {}) {
   )
 
   const multi = accounts.length > 1
-  const lines = [`💳 *PYMTZ TRANSACTIONS* — last ${WINDOW_HOURS}h (as of ${asOf})`]
-  let grandTotal = 0
-  const grandCounts = { completed: 0, pending: 0, failed: 0, expired: 0, other: 0 }
-  const grandStatusSums = { completed: {}, pending: {}, failed: {}, expired: {}, other: {} }
-  const grandSums = {}
+  const lines = [`💳 *PYMTZ TRANSACTIONS* (as of ${asOf})`]
+  const grandAll = newGrand()
+  const grand24 = newGrand()
   let anyOk = false
   let anyFailures = false
   let anyCapped = false
+
+  const IND = "     " // indent for the breakdown lines under a sub-heading
 
   for (const r of results) {
     lines.push("")
@@ -301,36 +293,41 @@ export async function getPymtzSummary({ baseUrl = DEFAULT_BASE_URL } = {}) {
       continue
     }
     anyOk = true
-    // Header: account name + count + total amount across currencies.
-    const curTotals = totalsByCurrency(r.payments)
-    const sumStr = fmtSums(curTotals)
-    lines.push(`▸ *${r.label}* — ${r.total} txn${r.total === 1 ? "" : "s"}${sumStr ? ` · ${sumStr}` : ""}`)
-    // Per-account status breakdown (count + amount each).
-    lines.push(...statusSummaryLines(r.counts, r.sums))
-    // Itemised transactions (newest first), capped.
-    for (const p of r.payments.slice(0, LIST_LIMIT)) lines.push(txnLine(p))
-    if (r.total > LIST_LIMIT) lines.push(`  …and ${r.total - LIST_LIMIT} more`)
-    // Accumulate grand totals.
-    grandTotal += r.total
-    for (const k of Object.keys(grandCounts)) {
-      grandCounts[k] += r.counts[k] || 0
-      for (const [cur, v] of Object.entries(r.sums[k] || {})) {
-        grandStatusSums[k][cur] = (grandStatusSums[k][cur] || 0) + v
-      }
-    }
-    for (const [cur, v] of Object.entries(curTotals)) grandSums[cur] = (grandSums[cur] || 0) + v
-    if (r.counts.failed > 0) anyFailures = true
+
+    const all = aggregate(r.payments)
+    const recent = r.payments.filter((p) => {
+      const c = Date.parse(p.created_at ?? p.createdAt ?? "")
+      return !Number.isFinite(c) || c >= startMs
+    })
+    const rec = aggregate(recent)
+
+    lines.push(`▸ *${r.label}*`)
+    // All-time section.
+    lines.push(`  📊 *All time* — ${all.total} txn${all.total === 1 ? "" : "s"}${r.capped ? " (most recent)" : ""}`)
+    lines.push(...statusSummaryLines(all.counts, all.sums, IND))
+    // Last-window section + itemised list.
+    lines.push(`  🕒 *Last ${WINDOW_HOURS}h* — ${rec.total} txn${rec.total === 1 ? "" : "s"}`)
+    lines.push(...statusSummaryLines(rec.counts, rec.sums, IND))
+    for (const p of recent.slice(0, LIST_LIMIT)) lines.push(txnLine(p))
+    if (rec.total > LIST_LIMIT) lines.push(`  …and ${rec.total - LIST_LIMIT} more`)
+
+    accInto(grandAll, all)
+    grandAll.total += all.total
+    accInto(grand24, rec)
+    grand24.total += rec.total
+    if (rec.counts.failed > 0) anyFailures = true
     if (r.capped) anyCapped = true
   }
 
-  lines.push("")
-  const grandSumStr = fmtSums(grandSums)
-  lines.push(
-    `Σ ${grandTotal} transaction${grandTotal === 1 ? "" : "s"}${grandSumStr ? ` · ${grandSumStr}` : ""} in last ${WINDOW_HOURS}h${multi ? " (all accounts)" : ""}`
-  )
-  if (multi) lines.push(...statusSummaryLines(grandCounts, grandStatusSums))
+  if (multi) {
+    lines.push("")
+    lines.push(`Σ *All time* — ${grandAll.total} txn${grandAll.total === 1 ? "" : "s"} (all accounts)`)
+    lines.push(...statusSummaryLines(grandAll.counts, grandAll.sums, IND))
+    lines.push(`Σ *Last ${WINDOW_HOURS}h* — ${grand24.total} txn${grand24.total === 1 ? "" : "s"} (all accounts)`)
+    lines.push(...statusSummaryLines(grand24.counts, grand24.sums, IND))
+  }
   if (anyCapped) {
-    lines.push(`⚠️ Page cap reached for an account — totals may be partial`)
+    lines.push(`⚠️ All-time totals show most-recent records only (account exceeds the fetch cap)`)
     console.warn("Pymtz digest: pagination cap hit — totals may be partial")
   }
 
@@ -339,6 +336,13 @@ export async function getPymtzSummary({ baseUrl = DEFAULT_BASE_URL } = {}) {
     configured: true,
     hasFailures: anyFailures,
     message: lines.join("\n"),
-    data: { windowHours: WINDOW_HOURS, asOf, grandTotal, accounts: results },
+    data: {
+      windowHours: WINDOW_HOURS,
+      asOf,
+      allTimeTotal: grandAll.total,
+      last24hTotal: grand24.total,
+      allTimeCounts: grandAll.counts,
+      last24hCounts: grand24.counts,
+    },
   }
 }
