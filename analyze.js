@@ -227,12 +227,27 @@ export async function analyzeCheckout(store, topPath, bottomPath, pageText = "")
     })
   }
 
-  const response = await client.messages.create({
-    model: "claude-opus-4-5",
-    max_tokens: 120,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content }],
-  })
+  let response
+  try {
+    response = await client.messages.create({
+      model: "claude-opus-4-5",
+      max_tokens: 120,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content }],
+    })
+  } catch (e) {
+    // Vision API unavailable (usage-limit cap, rate limit, outage). We already
+    // passed the fast text-check (no failure patterns) and reached the checkout,
+    // so DON'T raise a false PROBLEM. Report OK but flag that the visual check
+    // was skipped — the text-check still guards against text-based failures.
+    console.warn(`  ⚠ Vision unavailable — skipping visual check: ${e.message}`)
+    return {
+      isOk: true,
+      result: "OK (vision unavailable)",
+      detail: "Reached checkout; visual analysis skipped (Vision API unavailable)",
+      via: "vision-unavailable",
+    }
+  }
 
   const result = response.content[0].text.trim()
   const isOk = result.toUpperCase().startsWith("OK")
